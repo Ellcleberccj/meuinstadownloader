@@ -7,8 +7,6 @@ import shutil
 import tempfile
 import threading
 import zipfile
-import uuid
-import yt_dlp
 from functools import wraps
 from pathlib import Path
 from urllib.parse import urlparse
@@ -22,8 +20,6 @@ app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "change-me")
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data" if Path("/data").exists() else "./data"))
 SESSION_DIR = DATA_DIR / "sessions"
-YOUTUBE_DIR = DATA_DIR / "youtube_mp3"
-YOUTUBE_DIR.mkdir(parents=True, exist_ok=True)
 SESSION_DIR.mkdir(parents=True, exist_ok=True)
 LOCK = threading.Lock()
 USERNAME_RE = re.compile(r"^[A-Za-z0-9._]{1,30}$")
@@ -41,11 +37,6 @@ HTML = """
 <form method="post" action="{{url_for('download')}}"><label>Baixar todos os stories em ZIP</label><input name="username" placeholder="exemplo: instagram" required><button>Baixar todos os stories em ZIP</button></form>
 <form method="get" action="{{url_for('download_from_link')}}"><label>Link de um story específico</label><input name="url" placeholder="https://www.instagram.com/stories/usuario/123456789/"><button>Baixar story pelo link</button></form>
 <form method="get" action="{{url_for('download_post_link')}}"><label>Link de post/reels</label><input name="url" placeholder="https://www.instagram.com/reel/CODIGO/ ou https://www.instagram.com/p/CODIGO/" required><button>Baixar post/reels</button></form>
-<form method="get" action="{{url_for('download_youtube_mp3')}}">
-  <label>Link do YouTube para MP3</label>
-  <input name="url" placeholder="https://www.youtube.com/watch?v=CODIGO" required>
-  <button>Converter YouTube para MP3</button>
-</form>
 <form method="post" action="{{url_for('test_login')}}"><button class="btn2">Testar login configurado</button></form>
 <p class="note">Debug: <a href="{{url_for('debug_env')}}">/debug-env</a>. Após mudar variáveis na Railway, faça Redeploy.</p></div></main></body></html>
 """
@@ -261,61 +252,6 @@ def download_post_link():
         return redirect(url_for("index"))
     finally:
         shutil.rmtree(root, ignore_errors=True)
-
-def is_youtube_url(url):
-    parsed = urlparse((url or "").strip())
-    host = parsed.netloc.lower()
-    return parsed.scheme in ("http", "https") and ("youtube.com" in host or "youtu.be" in host)
-
-
-@app.get("/download-youtube")
-@auth_required
-def download_youtube_mp3():
-    url = (request.args.get("url") or "").strip()
-
-    if not is_youtube_url(url):
-        flash("Envie um link válido do YouTube.", "error")
-        return redirect(url_for("index"))
-
-    try:
-        job_id = uuid.uuid4().hex[:16]
-        output_template = str(YOUTUBE_DIR / f"{job_id}.%(ext)s")
-
-        options = {
-            "format": "bestaudio/best",
-            "outtmpl": output_template,
-            "noplaylist": True,
-            "max_filesize": 250 * 1024 * 1024,
-            "postprocessors": [
-                {
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": "mp3",
-                    "preferredquality": "192",
-                }
-            ],
-            "quiet": True,
-            "no_warnings": True,
-        }
-
-        with yt_dlp.YoutubeDL(options) as ydl:
-            ydl.download([url])
-
-        files = list(YOUTUBE_DIR.glob(f"{job_id}*.mp3"))
-
-        if not files:
-            flash("O MP3 não foi encontrado depois da conversão.", "error")
-            return redirect(url_for("index"))
-
-        return send_file(
-            files[0],
-            as_attachment=True,
-            download_name=files[0].name,
-            max_age=0,
-        )
-
-    except Exception as e:
-        flash(f"Erro ao converter YouTube para MP3: {type(e).__name__}: {e}", "error")
-        return redirect(url_for("index"))
 
 @app.post("/download")
 @auth_required
