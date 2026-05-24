@@ -66,6 +66,36 @@ def fish_error_detail(response):
     return detail or "sem corpo de resposta"
 
 
+def env_text(name, default):
+    value = (os.getenv(name) or "").strip().strip('"').strip("'")
+    return value or default
+
+
+def env_int(name, default):
+    try:
+        return int((os.getenv(name) or "").strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def clamp_reference_seconds(seconds):
+    return max(10, min(60, seconds))
+
+
+def default_reference_seconds():
+    return clamp_reference_seconds(env_int("FISH_REFERENCE_SECONDS", 30))
+
+
+def parse_reference_seconds(value):
+    if value in (None, ""):
+        return default_reference_seconds()
+    try:
+        seconds = int(str(value).strip())
+    except (TypeError, ValueError):
+        return default_reference_seconds()
+    return clamp_reference_seconds(seconds)
+
+
 def audio_source_files(root):
     suffixes = [".mp4", ".mov", ".mkv", ".webm", ".m4a", ".mp3", ".wav", ".aac", ".ogg", ".opus"]
     return [f for f in root.rglob("*") if f.is_file() and f.suffix.lower() in suffixes]
@@ -109,19 +139,19 @@ def download_reference_media(url, workdir):
     return pick_audio_source(workdir)
 
 
-def extract_reference_audio(url, workdir):
+def extract_reference_audio(url, workdir, reference_seconds):
     source = download_reference_media(url, workdir)
     reference_audio = workdir / "reference.wav"
     run_checked([
-        "ffmpeg", "-y", "-i", str(source), "-vn", "-ac", "1", "-ar", "44100", "-t", "30", str(reference_audio)
-    ], "Falha ao extrair até 30 segundos de áudio de referência")
+        "ffmpeg", "-y", "-i", str(source), "-vn", "-ac", "1", "-ar", "44100", "-t", str(reference_seconds), str(reference_audio)
+    ], "Falha ao extrair áudio de referência")
     if not reference_audio.exists() or reference_audio.stat().st_size == 0:
         raise RuntimeError("Não foi possível gerar o áudio de referência.")
     return reference_audio
 
 
 def fish_api_key():
-    key = (os.getenv("FISH_API_KEY") or "").strip().strip('"').strip("'")
+    key = env_text("FISH_API_KEY", "")
     if not key:
         raise RuntimeError("Configure FISH_API_KEY nas variáveis de ambiente da Railway.")
     return key
@@ -157,8 +187,9 @@ def fish_tts_with_reference(target_text, reference_audio_path, reference_text):
         "references": [{"audio": reference_audio, "text": reference_text}],
         "format": "mp3",
         "sample_rate": 44100,
-        "mp3_bitrate": 128,
-        "latency": "normal",
+        "mp3_bitrate": 192,
+        "latency": env_text("FISH_TTS_LATENCY", "normal"),
+        "chunk_length": env_int("FISH_TTS_CHUNK_LENGTH", 200),
         "normalize": True,
     }
     response = requests.post(
@@ -166,7 +197,7 @@ def fish_tts_with_reference(target_text, reference_audio_path, reference_text):
         headers={
             "Authorization": f"Bearer {fish_api_key()}",
             "Content-Type": "application/msgpack",
-            "model": "s2-pro",
+            "model": env_text("FISH_TTS_MODEL", "s2-pro"),
         },
         data=msgpack.packb(payload, use_bin_type=True),
         timeout=300,
@@ -197,6 +228,7 @@ def make_ref_tts():
         return redirect(url_for("index"))
     media_url = (request.form.get("url") or "").strip()
     target_text = (request.form.get("text") or "").strip()
+    reference_seconds = parse_reference_seconds(request.form.get("reference_seconds"))
     if not media_url:
         flash("Informe o link da mídia de referência.", "error")
         return redirect(url_for("index"))
@@ -207,7 +239,7 @@ def make_ref_tts():
     workdir = Path(tempfile.mkdtemp(prefix="ref_tts_"))
     try:
         prune_ref_tts_outputs()
-        reference_audio = extract_reference_audio(media_url, workdir)
+        reference_audio = extract_reference_audio(media_url, workdir, reference_seconds)
         reference_text = fish_asr(reference_audio)
         output_bytes = fish_tts_with_reference(target_text, reference_audio, reference_text)
         filename = f"{uuid.uuid4().hex}.mp3"
