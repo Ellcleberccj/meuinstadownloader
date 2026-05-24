@@ -61,6 +61,11 @@ def run_checked(command, friendly_error):
         raise RuntimeError(f"{friendly_error}.{suffix}")
 
 
+def fish_error_detail(response):
+    detail = (response.text or "").strip()[:1000]
+    return detail or "sem corpo de resposta"
+
+
 def audio_source_files(root):
     suffixes = [".mp4", ".mov", ".mkv", ".webm", ".m4a", ".mp3", ".wav", ".aac", ".ogg", ".opus"]
     return [f for f in root.rglob("*") if f.is_file() and f.suffix.lower() in suffixes]
@@ -123,16 +128,22 @@ def fish_api_key():
 
 
 def fish_asr(audio_path):
-    with open(audio_path, "rb") as audio:
-        response = requests.post(
-            "https://api.fish.audio/v1/asr",
-            headers={"Authorization": f"Bearer {fish_api_key()}"},
-            files={"audio": (audio_path.name, audio, "audio/wav")},
-            data={"ignore_timestamps": "true"},
-            timeout=180,
-        )
+    audio_bytes = Path(audio_path).read_bytes()
+    payload = {"audio": audio_bytes, "ignore_timestamps": True}
+    response = requests.post(
+        "https://api.fish.audio/v1/asr",
+        headers={
+            "Authorization": f"Bearer {fish_api_key()}",
+            "Content-Type": "application/msgpack",
+        },
+        data=msgpack.packb(payload, use_bin_type=True),
+        timeout=180,
+    )
     if response.status_code >= 400:
-        raise RuntimeError(f"Falha na transcrição automática pela Fish Audio: HTTP {response.status_code}.")
+        raise RuntimeError(
+            f"Falha na transcrição automática pela Fish Audio: HTTP {response.status_code}. "
+            f"Resposta: {fish_error_detail(response)}"
+        )
     text = (response.json().get("text") or "").strip()
     if not text:
         raise RuntimeError("A Fish Audio não retornou transcrição para a referência. Use uma mídia com fala mais clara.")
@@ -161,7 +172,10 @@ def fish_tts_with_reference(target_text, reference_audio_path, reference_text):
         timeout=300,
     )
     if response.status_code >= 400:
-        raise RuntimeError(f"Falha ao gerar TTS pela Fish Audio: HTTP {response.status_code}.")
+        raise RuntimeError(
+            f"Falha ao gerar TTS pela Fish Audio: HTTP {response.status_code}. "
+            f"Resposta: {fish_error_detail(response)}"
+        )
     if not response.content:
         raise RuntimeError("A Fish Audio retornou uma resposta vazia para o TTS.")
     return response.content
