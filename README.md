@@ -1,58 +1,54 @@
-# Instagram Stories Downloader para Railway
+# Meu Insta Downloader
 
-App Flask pronto para deploy na Railway usando o pacote `instaloader` incluído no projeto.
+App Flask pronto para Railway para baixar stories disponíveis para a conta logada.
 
-Use apenas para baixar stories públicos, seus próprios stories, ou conteúdo de contas para as quais você tem autorização. O app não burla perfil privado, bloqueio, login, 2FA ou limitações do Instagram.
+## O que mudou
 
-## Deploy na Railway
+O app agora tem um botão **Testar login configurado** e a rota `/debug-env` mostra se as variáveis estão chegando na Railway sem expor sua senha.
 
-1. Suba esta pasta para um repositório GitHub.
-2. Na Railway, crie um novo projeto a partir desse repositório.
-3. A Railway vai detectar o `Dockerfile` e subir o app automaticamente.
-4. Configure as variáveis em **Variables**:
+## Variáveis na Railway
+
+Login por senha:
 
 ```env
-IG_USERNAME=seu_usuario_instagram
-IG_PASSWORD=sua_senha_instagram
-FLASK_SECRET_KEY=coloque_uma_string_grande_aleatoria
-APP_USERNAME=admin_opcional
-APP_PASSWORD=senha_do_painel_opcional
+IG_USERNAME=seu_usuario_sem_arroba
+IG_PASSWORD=sua_senha
 ```
 
-`APP_USERNAME` e `APP_PASSWORD` protegem a tela do app com senha. Recomendo usar em produção.
+Depois de alterar qualquer variável, faça **Redeploy** no serviço da Railway.
 
-## Sessão persistente
+## Alternativa mais estável
 
-A Railway pode reiniciar o container. O app tenta salvar sessão em `/data/sessions`. Para maior estabilidade, adicione um Volume na Railway montado em `/data`.
-
-Alternativa: gerar uma sessão local e colar em `IG_SESSION_B64`.
+Se senha normal falhar, use sessão local:
 
 ```bash
 pip install -r requirements.txt
 python scripts/export_session_base64.py
 ```
 
-Depois, na Railway, configure:
+Depois coloque na Railway:
 
 ```env
-IG_USERNAME=seu_usuario_instagram
+IG_USERNAME=seu_usuario_sem_arroba
 IG_SESSION_B64=valor_gerado_pelo_script
 ```
 
-## Rodar localmente
+## Alternativa por cookies do navegador
 
-```bash
-pip install -r requirements.txt
-export IG_USERNAME=seu_usuario_instagram
-export IG_PASSWORD=sua_senha_instagram
-python app.py
+Também é aceito:
+
+```env
+IG_USERNAME=seu_usuario_sem_arroba
+IG_COOKIES_JSON={"sessionid":"...","csrftoken":"...","ds_user_id":"...","mid":"..."}
 ```
 
-Abra `http://localhost:8080`.
+## Proteção opcional
 
-## Observações importantes
+```env
+APP_USERNAME=admin
+APP_PASSWORD=senha_forte
+```
 
-- Stories exigem login no Instagram pelo próprio funcionamento do Instaloader.
-- Contas com 2FA podem exigir sessão gerada localmente.
-- Evite uso agressivo para não tomar rate limit.
-- O arquivo baixado vem em ZIP com fotos e vídeos dos stories disponíveis no momento.
+## Observação
+
+O app não burla perfil privado, bloqueios, 2FA ou restrições do Instagram. Ele baixa apenas stories que a conta logada consegue visualizar.
