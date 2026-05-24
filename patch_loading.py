@@ -14,7 +14,7 @@ if 'MEDIA_AUDIO_DIR' not in s:
     s = s.replace('SESSION_DIR = DATA_DIR / "sessions"\n', 'SESSION_DIR = DATA_DIR / "sessions"\nMEDIA_AUDIO_DIR = DATA_DIR / "media_audio"\nMEDIA_AUDIO_DIR.mkdir(parents=True, exist_ok=True)\n')
 
 if '.checkrow' not in s:
-    s = s.replace('input{width:100%;', 'input,textarea{width:100%;')
+    s = s.replace('input{width:100%;', 'input,textarea,select{width:100%;')
     s = s.replace('button[disabled]{opacity:.65;cursor:wait}</style>', 'button[disabled]{opacity:.65;cursor:wait}textarea{min-height:130px;resize:vertical}.checkrow{display:flex;align-items:flex-start;gap:10px;margin-top:18px}.checkrow input{width:auto;margin-top:4px}.checkrow label{margin:0;font-weight:700}audio{width:100%;margin:16px 0}.transcript{white-space:pre-wrap;background:#101319;border:1px solid #2b2f3a;border-radius:14px;padding:14px;color:#e5e7eb}</style>')
 
 if 'download_media_audio' not in s:
@@ -54,9 +54,8 @@ def download_media_audio():
 '''
     s = s.replace('\n@app.post("/download")', route + '\n@app.post("/download")')
 
-reference_seconds_field = '''<label>Duração da referência em segundos</label><input type="number" name="reference_seconds" value="30" min="10" max="60">
-<p class="small">Para melhor qualidade, use pelo menos 10 segundos de voz limpa. O ideal é 30-60 segundos, sem música, sem ruído e com apenas uma pessoa falando.</p>
-'''
+quality_hint = '<p class="small">Para melhor qualidade, use pelo menos 10 segundos de voz limpa. O ideal é 30-60 segundos, sem música, sem ruído e com apenas uma pessoa falando.</p>\n'
+reference_seconds_field = '<label>Duração da referência em segundos</label><input type="number" name="reference_seconds" value="30" min="10" max="60">\n' + quality_hint
 
 if 'make_ref_tts' not in s:
     marker = '<form method="post" action="{{url_for(\'test_login\')}}"><button class="btn2">Testar login configurado</button></form>'
@@ -72,6 +71,29 @@ if 'make_ref_tts' not in s:
 elif 'reference_seconds' not in s:
     consent_row = '<div class="checkrow"><input id="consent" type="checkbox" name="consent" value="yes" required><label for="consent">Confirmo que esta é minha voz ou tenho autorização para usá-la.</label></div>'
     s = s.replace(consent_row, reference_seconds_field + consent_row)
+
+if 'create_fish_voice' not in s:
+    marker = '<form method="post" action="{{url_for(\'test_login\')}}"><button class="btn2">Testar login configurado</button></form>'
+    create_form = '''<form method="post" action="{{url_for('create_fish_voice')}}">
+<h2>Criar voz privada</h2>
+<label>URL da mídia própria/autorizada</label><input name="voice_url" placeholder="Story, post, reels ou URL pública/autorizada de vídeo/mídia" required>
+<label>Nome da voz</label><input name="voice_name" placeholder="Exemplo: Minha voz" required>
+''' + reference_seconds_field + '''<div class="checkrow"><input id="voice_consent" type="checkbox" name="consent" value="yes" required><label for="voice_consent">Confirmo que esta é minha voz ou tenho autorização para usá-la.</label></div>
+<button>Criar voz</button>
+</form>
+'''
+    s = s.replace(marker, create_form + marker)
+
+if 'generate_fish_voice' not in s:
+    marker = '<form method="post" action="{{url_for(\'test_login\')}}"><button class="btn2">Testar login configurado</button></form>'
+    saved_form = '''<form method="post" action="{{url_for('generate_fish_voice')}}">
+<h2>Gerar com voz salva</h2>
+<label>Voz salva</label><select name="model_id" required>{% if saved_voices %}{% for voice in saved_voices %}<option value="{{voice.model_id}}">{{voice.name}} · {{voice.model_id}}</option>{% endfor %}{% else %}<option value="" disabled selected>Nenhuma voz salva</option>{% endif %}</select>
+<label>Texto que a voz deve falar</label><textarea name="text" placeholder="Digite aqui o texto que será falado..." required></textarea>
+<button>Gerar MP3</button>
+</form>
+'''
+    s = s.replace(marker, saved_form + marker)
 
 if 'reference_tts.register(' not in s:
     registration = '''
@@ -89,5 +111,8 @@ reference_tts.register(
 )
 '''
     s = s.replace('\nif __name__ == "__main__":', registration + '\nif __name__ == "__main__":')
+
+if 'saved_voices=reference_tts.load_saved_voices()' not in s:
+    s = s.replace('return render_template_string(HTML)', 'return render_template_string(HTML, saved_voices=reference_tts.load_saved_voices())')
 
 p.write_text(s, encoding='utf-8')
