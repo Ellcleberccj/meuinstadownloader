@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 import msgpack
 import requests
-from flask import Response, flash, redirect, render_template_string, request, url_for
+from flask import Response, flash, redirect, render_template_string, request, send_file, url_for
 from instaloader import Post
 
 REF_TTS_FILENAME_RE = re.compile(r"^[a-f0-9]{32}\.mp3$")
@@ -29,35 +29,10 @@ RESULT_HTML = """
 <!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Áudio gerado</title>
 <style>:root{color-scheme:dark}body{margin:0;font-family:Inter,system-ui,Arial;background:#0f1115;color:#f4f4f5}main{max-width:1050px;margin:auto;padding:42px 20px}.card{background:#171a21;border:1px solid #2b2f3a;border-radius:22px;padding:28px}h1{margin:0 0 10px;font-size:32px}p{color:#c7cbda;line-height:1.55}.btn{display:inline-block;text-align:center;text-decoration:none;margin-top:14px;padding:13px 16px;border:0;border-radius:14px;background:#f4f4f5;color:#111827;font-weight:800;font-size:15px}.btn2{background:#252a35;color:#f4f4f5;border:1px solid #3a3f4c}.actions{display:flex;gap:10px;flex-wrap:wrap}.transcript{white-space:pre-wrap;background:#101319;border:1px solid #2b2f3a;border-radius:14px;padding:14px;color:#e5e7eb}audio{width:100%;margin:16px 0}</style></head>
 <body><main><div class="card"><h1>Áudio gerado</h1><p>Preview do MP3 criado pelo app.</p>
-<audio controls preload="metadata" src="{{audio_url}}"></audio>
-<div class="actions"><button class="btn" type="button" onclick="downloadMp3('{{download_url}}', '{{filename}}')">Baixar MP3</button><a class="btn btn2" href="{{url_for('index')}}">Voltar</a></div>
+<audio controls preload="auto" src="{{audio_url}}"></audio>
+<div class="actions"><a class="btn" href="{{file_url}}" target="_blank" rel="noopener">Abrir MP3</a><a class="btn btn2" href="{{file_url}}" download="{{filename}}">Baixar MP3</a><a class="btn btn2" href="{{url_for('index')}}">Voltar</a></div>
 {% if reference_text %}<h2>Transcrição automática usada como referência</h2><div class="transcript">{{reference_text}}</div>{% endif %}
-</div></main><script>
-async function downloadMp3(url, filename) {
-  const btn = event.target;
-  const original = btn.innerText;
-  try {
-    btn.disabled = true;
-    btn.innerText = "Preparando download...";
-    const resp = await fetch(url, { credentials: "same-origin" });
-    if (!resp.ok) throw new Error("HTTP " + resp.status);
-    const blob = await resp.blob();
-    const objectUrl = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = objectUrl;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(objectUrl), 30000);
-  } catch (e) {
-    alert("Erro ao baixar MP3: " + e.message);
-  } finally {
-    btn.disabled = false;
-    btn.innerText = original;
-  }
-}
-</script></body></html>
+</div></main></body></html>
 """
 
 
@@ -76,6 +51,7 @@ def register(app, auth_required, data_dir, lock, loader_fn, story_iter_fn, story
     app.add_url_rule("/make-ref-tts", "make_ref_tts", auth_required(make_ref_tts), methods=["POST"])
     app.add_url_rule("/create-fish-voice", "create_fish_voice", auth_required(create_fish_voice), methods=["POST"])
     app.add_url_rule("/generate-fish-voice", "generate_fish_voice", auth_required(generate_fish_voice), methods=["POST"])
+    app.add_url_rule("/media-file/<filename>", "media_file", auth_required(media_file), methods=["GET"])
     app.add_url_rule("/ref-tts-audio/<filename>", "ref_tts_audio", auth_required(ref_tts_audio), methods=["GET"])
     app.add_url_rule("/ref-tts-download/<filename>", "ref_tts_download", auth_required(ref_tts_download), methods=["GET"])
     app.add_url_rule("/ref-tts-output/<filename>", "ref_tts_output", auth_required(ref_tts_output), methods=["GET"])
@@ -393,7 +369,7 @@ def normalize_output_mp3(output_bytes):
             duration = float((probe.stdout or "").strip())
         except ValueError:
             raise RuntimeError("O MP3 gerado não retornou uma duração válida. Tente gerar novamente.")
-        if not duration > 0:
+        if duration != duration or duration < 0.1:
             raise RuntimeError("O MP3 gerado ficou com duração inválida. Tente gerar novamente.")
         return output_path.read_bytes()
     finally:
@@ -408,10 +384,12 @@ def save_output_mp3(output_bytes):
 
 
 def render_audio_result(filename, reference_text=""):
+    file_url = url_for("media_file", filename=filename)
     return render_template_string(
         RESULT_HTML,
-        audio_url=url_for("ref_tts_audio", filename=filename),
-        download_url=url_for("ref_tts_download", filename=filename),
+        file_url=file_url,
+        audio_url=file_url,
+        download_url=file_url,
         filename=filename,
         reference_text=reference_text,
     )
@@ -498,11 +476,6 @@ def generate_fish_voice():
         return redirect(url_for("index"))
 
 
-def content_disposition(filename, download):
-    disposition = "attachment" if download else "inline"
-    return f'{disposition}; filename="{filename}"'
-
-
 def ref_tts_path(filename):
     if not REF_TTS_FILENAME_RE.fullmatch(filename or ""):
         return None
@@ -512,74 +485,29 @@ def ref_tts_path(filename):
     return path
 
 
-def parse_range_header(range_header, size):
-    match = re.fullmatch(r"bytes=(\d*)-(\d*)", range_header or "")
-    if not match:
-        return None
-    start_text, end_text = match.groups()
-    if not start_text and not end_text:
-        return None
-    if start_text:
-        start = int(start_text)
-        end = int(end_text) if end_text else size - 1
-    else:
-        suffix_length = int(end_text)
-        if suffix_length <= 0:
-            return None
-        start = max(size - suffix_length, 0)
-        end = size - 1
-    if start >= size or end < start:
-        return None
-    return start, min(end, size - 1)
-
-
-def send_mp3_with_range(path, filename, download=False):
-    size = path.stat().st_size
-    headers = {
-        "Content-Type": "audio/mpeg",
-        "Accept-Ranges": "bytes",
-        "X-Content-Type-Options": "nosniff",
-        "Cache-Control": "private, max-age=3600",
-        "Content-Disposition": content_disposition(filename, download),
-    }
-    range_header = request.headers.get("Range")
-    if range_header:
-        byte_range = parse_range_header(range_header, size)
-        if byte_range is None:
-            headers["Content-Range"] = f"bytes */{size}"
-            headers["Content-Length"] = "0"
-            return Response(status=416, headers=headers)
-        start, end = byte_range
-        length = end - start + 1
-        with open(path, "rb") as audio:
-            audio.seek(start)
-            data = audio.read(length)
-        headers.update({
-            "Content-Range": f"bytes {start}-{end}/{size}",
-            "Content-Length": str(length),
-        })
-        return Response(data, status=206, headers=headers)
-
-    headers["Content-Length"] = str(size)
-    return Response(path.read_bytes(), status=200, headers=headers)
+def media_file(filename):
+    path = ref_tts_path(filename)
+    if path is None:
+        return Response("Arquivo não encontrado.", 404)
+    return send_file(
+        path,
+        mimetype="audio/mpeg",
+        as_attachment=False,
+        download_name=filename,
+        max_age=3600,
+        conditional=True,
+        etag=True,
+        last_modified=path.stat().st_mtime,
+    )
 
 
 def ref_tts_audio(filename):
-    path = ref_tts_path(filename)
-    if path is None:
-        return Response("Arquivo não encontrado.", 404)
-    return send_mp3_with_range(path, filename, download=False)
+    return media_file(filename)
 
 
 def ref_tts_download(filename):
-    path = ref_tts_path(filename)
-    if path is None:
-        return Response("Arquivo não encontrado.", 404)
-    return send_mp3_with_range(path, filename, download=True)
+    return media_file(filename)
 
 
 def ref_tts_output(filename):
-    path = ref_tts_path(filename)
-    if path is None:
-        return Response("Arquivo não encontrado.", 404)
-    return send_mp3_with_range(path, filename, download=request.args.get("download") == "1")
+    return media_file(filename)
