@@ -1,5 +1,6 @@
 import base64
 import io
+import json
 import os
 import re
 import shutil
@@ -10,225 +11,159 @@ from functools import wraps
 from pathlib import Path
 
 from flask import Flask, Response, flash, redirect, render_template_string, request, send_file, url_for
-
 import instaloader
 from instaloader import Profile
-from instaloader.exceptions import (
-    BadCredentialsException,
-    ConnectionException,
-    InstaloaderException,
-    LoginException,
-    LoginRequiredException,
-    ProfileNotExistsException,
-    TwoFactorAuthRequiredException,
-)
+from instaloader.exceptions import BadCredentialsException, ConnectionException, InstaloaderException, LoginException, LoginRequiredException, ProfileNotExistsException, TwoFactorAuthRequiredException
 
 app = Flask(__name__)
-app.secret_key = os.getenv("FLASK_SECRET_KEY", "change-me-in-railway-vars")
-
+app.secret_key = os.getenv("FLASK_SECRET_KEY", "change-me")
 DATA_DIR = Path(os.getenv("DATA_DIR", "/data" if Path("/data").exists() else "./data"))
-DATA_DIR.mkdir(parents=True, exist_ok=True)
 SESSION_DIR = DATA_DIR / "sessions"
 SESSION_DIR.mkdir(parents=True, exist_ok=True)
-
-USERNAME_RE = re.compile(r"^[A-Za-z0-9._]{1,30}$")
 LOCK = threading.Lock()
+USERNAME_RE = re.compile(r"^[A-Za-z0-9._]{1,30}$")
+LAST_LOGIN_STATUS = {"ok": None, "message": "Ainda não foi feito teste de login."}
 
-INDEX_HTML = """
-<!doctype html>
-<html lang="pt-BR">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Instagram Stories Downloader</title>
-  <style>
-    :root { color-scheme: dark; }
-    body { margin: 0; font-family: Inter, system-ui, Arial, sans-serif; background: #0f1115; color: #f4f4f5; }
-    main { max-width: 720px; margin: 0 auto; padding: 48px 20px; }
-    .card { background: #171a21; border: 1px solid #2b2f3a; border-radius: 22px; padding: 28px; box-shadow: 0 20px 60px rgba(0,0,0,.25); }
-    h1 { margin: 0 0 10px; font-size: 32px; line-height: 1.1; }
-    p { color: #b6bac6; line-height: 1.55; }
-    label { display: block; margin: 22px 0 8px; font-weight: 700; }
-    input { width: 100%; box-sizing: border-box; padding: 14px 16px; border-radius: 14px; border: 1px solid #3a3f4c; background: #0f1115; color: white; font-size: 16px; }
-    button { margin-top: 20px; width: 100%; padding: 15px 18px; border: 0; border-radius: 14px; background: #f4f4f5; color: #111827; font-weight: 800; font-size: 16px; cursor: pointer; }
-    .msg { padding: 12px 14px; border-radius: 14px; margin: 16px 0; background: #312320; color: #ffd7c2; border: 1px solid #744534; }
-    .note { font-size: 14px; }
-    code { background: #0f1115; border: 1px solid #2b2f3a; border-radius: 8px; padding: 2px 6px; }
-  </style>
-</head>
-<body>
-<main>
-  <div class="card">
-    <h1>Baixar stories do Instagram</h1>
-    <p>Digite o @ de um perfil para baixar os stories disponíveis em um arquivo ZIP. Use apenas com conteúdo público, seu próprio conteúdo ou contas para as quais você tem autorização.</p>
-    {% with messages = get_flashed_messages() %}
-      {% if messages %}
-        {% for message in messages %}<div class="msg">{{ message }}</div>{% endfor %}
-      {% endif %}
-    {% endwith %}
-    <form method="post" action="{{ url_for('download') }}">
-      <label for="username">Usuário do Instagram</label>
-      <input id="username" name="username" placeholder="exemplo: instagram" autocomplete="off" required>
-      <button type="submit">Baixar stories em ZIP</button>
-    </form>
-    <p class="note">Observação: o Instagram normalmente exige login para stories. Configure <code>IG_USERNAME</code> e <code>IG_PASSWORD</code> nas variáveis da Railway, ou monte uma sessão persistente em <code>/data</code>.</p>
-  </div>
-</main>
-</body>
-</html>
+HTML = """
+<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Insta Downloader</title>
+<style>:root{color-scheme:dark}body{margin:0;font-family:Inter,system-ui,Arial;background:#0f1115;color:#f4f4f5}main{max-width:760px;margin:auto;padding:48px 20px}.card{background:#171a21;border:1px solid #2b2f3a;border-radius:22px;padding:28px}h1{margin:0 0 10px;font-size:32px}p{color:#c7cbda;line-height:1.55}label{display:block;margin:22px 0 8px;font-weight:700}input{width:100%;box-sizing:border-box;padding:14px 16px;border-radius:14px;border:1px solid #3a3f4c;background:#0f1115;color:white;font-size:16px}button{margin-top:20px;width:100%;padding:15px;border:0;border-radius:14px;background:#f4f4f5;color:#111827;font-weight:800;font-size:16px;cursor:pointer}.msg{padding:12px 14px;border-radius:14px;margin:16px 0;background:#312320;color:#ffd7c2;border:1px solid #744534}.ok{background:#172b1c;color:#c9f7d2;border-color:#2f6840}code{background:#0f1115;border:1px solid #2b2f3a;border-radius:8px;padding:2px 6px}a{color:#dbeafe}.note{font-size:14px}</style></head>
+<body><main><div class="card"><h1>Baixar stories do Instagram</h1><p>Digite o @ de um perfil para baixar os stories disponíveis em ZIP. Use apenas com conteúdo público, próprio ou autorizado.</p>
+{% with messages=get_flashed_messages(with_categories=true) %}{% for c,m in messages %}<div class="msg {{'ok' if c=='ok' else ''}}">{{m}}</div>{% endfor %}{% endwith %}
+<form method="post" action="{{url_for('download')}}"><label>Usuário do Instagram</label><input name="username" placeholder="exemplo: instagram" required><button>Baixar stories em ZIP</button></form>
+<form method="post" action="{{url_for('test_login')}}"><button>Testar login configurado</button></form>
+<p class="note">Debug: <a href="{{url_for('debug_env')}}">/debug-env</a>. Após mudar variáveis na Railway, faça Redeploy.</p></div></main></body></html>
 """
 
+def clean(name, default=""):
+    v = os.getenv(name, default)
+    return default if v is None else v.strip().strip('"').strip("'")
 
-def require_basic_auth(fn):
-    app_user = os.getenv("APP_USERNAME")
-    app_pass = os.getenv("APP_PASSWORD")
-    if not app_user or not app_pass:
+def auth_required(fn):
+    u, p = os.getenv("APP_USERNAME"), os.getenv("APP_PASSWORD")
+    if not u or not p:
         return fn
-
     @wraps(fn)
-    def wrapper(*args, **kwargs):
+    def w(*a, **kw):
         auth = request.authorization
-        if not auth or auth.username != app_user or auth.password != app_pass:
-            return Response(
-                "Autenticação necessária", 401,
-                {"WWW-Authenticate": 'Basic realm="Stories Downloader"'}
-            )
-        return fn(*args, **kwargs)
+        if not auth or auth.username != u or auth.password != p:
+            return Response("Autenticação necessária", 401, {"WWW-Authenticate": 'Basic realm="Insta Downloader"'})
+        return fn(*a, **kw)
+    return w
 
-    return wrapper
-
-
-def normalize_username(value: str) -> str:
-    value = (value or "").strip()
-    value = value.removeprefix("@").strip("/")
-    if "instagram.com/" in value:
-        value = value.split("instagram.com/", 1)[1].split("/", 1)[0]
-    if not USERNAME_RE.fullmatch(value):
+def normalize_user(v):
+    v = (v or "").strip().strip('"').strip("'").removeprefix("@").strip("/")
+    if "instagram.com/" in v:
+        v = v.split("instagram.com/", 1)[1].split("/", 1)[0]
+    if not USERNAME_RE.fullmatch(v):
         raise ValueError("Usuário inválido. Use apenas o @ ou a URL do perfil.")
-    return value
+    return v
 
-
-def load_session_from_env(session_path: Path) -> None:
-    encoded = os.getenv("IG_SESSION_B64")
-    if encoded and not session_path.exists():
-        session_path.write_bytes(base64.b64decode(encoded))
-
-
-def build_loader(download_dir: Path) -> instaloader.Instaloader:
-    loader = instaloader.Instaloader(
-        dirname_pattern=str(download_dir / "{target}"),
-        filename_pattern="{date_utc}_UTC_{mediaid}",
-        download_pictures=True,
-        download_videos=True,
-        download_video_thumbnails=False,
-        download_geotags=False,
-        download_comments=False,
-        save_metadata=False,
-        compress_json=False,
-        quiet=True,
-        request_timeout=120,
-        max_connection_attempts=2,
-        sanitize_paths=True,
-    )
-
-    ig_user = os.getenv("IG_USERNAME")
-    ig_pass = os.getenv("IG_PASSWORD")
+def make_loader(root: Path):
+    L = instaloader.Instaloader(dirname_pattern=str(root / "{target}"), filename_pattern="{date_utc}_UTC_{mediaid}", download_pictures=True, download_videos=True, download_video_thumbnails=False, download_geotags=False, download_comments=False, save_metadata=False, compress_json=False, quiet=True, request_timeout=120, max_connection_attempts=2, sanitize_paths=True)
+    ig_user = clean("IG_USERNAME").removeprefix("@").strip()
+    ig_pass = clean("IG_PASSWORD")
     if not ig_user:
-        raise LoginRequiredException("Configure IG_USERNAME e IG_PASSWORD nas variáveis da Railway.")
-
+        raise LoginRequiredException("IG_USERNAME não está chegando no app. Confira as variáveis no serviço correto da Railway e faça Redeploy.")
     session_path = SESSION_DIR / f"session-{ig_user}"
-    load_session_from_env(session_path)
-
+    if clean("IG_SESSION_B64") and not session_path.exists():
+        session_path.write_bytes(base64.b64decode(clean("IG_SESSION_B64")))
     if session_path.exists():
         try:
-            loader.load_session_from_file(ig_user, str(session_path))
-            return loader
+            L.load_session_from_file(ig_user, str(session_path))
+            if L.test_login():
+                return L
+            session_path.unlink(missing_ok=True)
         except Exception:
             session_path.unlink(missing_ok=True)
-
+    if clean("IG_COOKIES_JSON"):
+        cookies = json.loads(clean("IG_COOKIES_JSON"))
+        if not cookies.get("sessionid") or not cookies.get("csrftoken"):
+            raise LoginRequiredException('IG_COOKIES_JSON precisa conter pelo menos "sessionid" e "csrftoken".')
+        L.load_session(ig_user, cookies)
+        if not L.test_login():
+            raise LoginRequiredException("Cookies carregados, mas o Instagram não confirmou login. Copie cookies novos do navegador.")
+        return L
     if not ig_pass:
-        raise LoginRequiredException("Sessão não encontrada e IG_PASSWORD não foi configurado.")
+        raise LoginRequiredException("Configure IG_PASSWORD, IG_SESSION_B64 ou IG_COOKIES_JSON na Railway.")
+    L.login(ig_user, ig_pass)
+    logged = L.test_login()
+    if not logged:
+        raise LoginRequiredException("Senha carregada, mas o Instagram não confirmou login. Use IG_SESSION_B64 ou IG_COOKIES_JSON.")
+    L.save_session_to_file(str(session_path))
+    return L
 
-    loader.login(ig_user, ig_pass)
-    loader.save_session_to_file(str(session_path))
-    return loader
-
-
-def zip_directory(source_dir: Path, username: str) -> io.BytesIO:
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for file in source_dir.rglob("*"):
-            if file.is_file():
-                zf.write(file, file.relative_to(source_dir))
-    buffer.seek(0)
-    return buffer
-
+def zip_dir(root):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for f in root.rglob("*"):
+            if f.is_file():
+                z.write(f, f.relative_to(root))
+    buf.seek(0)
+    return buf
 
 @app.get("/")
-@require_basic_auth
+@auth_required
 def index():
-    return render_template_string(INDEX_HTML)
-
+    return render_template_string(HTML)
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
+@app.get("/debug-env")
+@auth_required
+def debug_env():
+    return {"IG_USERNAME_configurado": bool(os.getenv("IG_USERNAME")), "IG_USERNAME_normalizado": (clean("IG_USERNAME").removeprefix("@").strip()[:2] + "***") if os.getenv("IG_USERNAME") else None, "IG_PASSWORD_configurado": bool(os.getenv("IG_PASSWORD")), "IG_PASSWORD_tamanho": len(clean("IG_PASSWORD")) if os.getenv("IG_PASSWORD") else 0, "IG_SESSION_B64_configurado": bool(os.getenv("IG_SESSION_B64")), "IG_COOKIES_JSON_configurado": bool(os.getenv("IG_COOKIES_JSON")), "DATA_DIR": str(DATA_DIR), "SESSION_DIR_existe": SESSION_DIR.exists(), "ultimo_teste_login": LAST_LOGIN_STATUS}
 
-@app.post("/download")
-@require_basic_auth
-def download():
-    try:
-        username = normalize_username(request.form.get("username", ""))
-    except ValueError as exc:
-        flash(str(exc))
-        return redirect(url_for("index"))
-
-    temp_root = Path(tempfile.mkdtemp(prefix="stories_"))
+@app.post("/test-login")
+@auth_required
+def test_login():
+    root = Path(tempfile.mkdtemp(prefix="test_login_"))
     try:
         with LOCK:
-            loader = build_loader(temp_root)
-            profile = Profile.from_username(loader.context, username)
-            downloaded_count = 0
-            for story in loader.get_stories(userids=[profile.userid]):
-                for item in story.get_items():
-                    if loader.download_storyitem(item, target=username):
-                        downloaded_count += 1
-
-        if downloaded_count == 0:
-            flash("Nenhum story disponível foi encontrado para esse perfil, ou os arquivos já estavam indisponíveis.")
-            return redirect(url_for("index"))
-
-        zip_buffer = zip_directory(temp_root, username)
-        return send_file(
-            zip_buffer,
-            mimetype="application/zip",
-            as_attachment=True,
-            download_name=f"{username}_stories.zip",
-            max_age=0,
-        )
-
-    except ProfileNotExistsException:
-        flash("Perfil não encontrado.")
-        return redirect(url_for("index"))
-    except TwoFactorAuthRequiredException:
-        flash("Essa conta tem 2FA. Gere uma sessão local e envie como IG_SESSION_B64, ou use uma conta sem 2FA para automação.")
-        return redirect(url_for("index"))
-    except (BadCredentialsException, LoginException):
-        flash("Falha no login do Instagram. Confira IG_USERNAME e IG_PASSWORD na Railway.")
-        return redirect(url_for("index"))
-    except LoginRequiredException as exc:
-        flash(str(exc))
-        return redirect(url_for("index"))
-    except ConnectionException as exc:
-        flash(f"Erro de conexão/limite do Instagram: {exc}")
-        return redirect(url_for("index"))
-    except InstaloaderException as exc:
-        flash(f"Erro do Instaloader: {exc}")
-        return redirect(url_for("index"))
+            L = make_loader(root)
+            user = L.test_login()
+        LAST_LOGIN_STATUS.update({"ok": True, "message": f"Login confirmado como @{user}."})
+        flash(f"Login confirmado como @{user}.", "ok")
+    except Exception as e:
+        LAST_LOGIN_STATUS.update({"ok": False, "message": f"{type(e).__name__}: {e}"})
+        flash(f"Falha no teste de login: {type(e).__name__}: {e}", "error")
     finally:
-        shutil.rmtree(temp_root, ignore_errors=True)
+        shutil.rmtree(root, ignore_errors=True)
+    return redirect(url_for("index"))
 
+@app.post("/download")
+@auth_required
+def download():
+    try:
+        target = normalize_user(request.form.get("username", ""))
+        root = Path(tempfile.mkdtemp(prefix="stories_"))
+        with LOCK:
+            L = make_loader(root)
+            profile = Profile.from_username(L.context, target)
+            count = 0
+            for story in L.get_stories(userids=[profile.userid]):
+                for item in story.get_items():
+                    if L.download_storyitem(item, target=target):
+                        count += 1
+        if count == 0:
+            flash("Nenhum story disponível foi encontrado para esse perfil pela conta logada.", "error")
+            return redirect(url_for("index"))
+        return send_file(zip_dir(root), mimetype="application/zip", as_attachment=True, download_name=f"{target}_stories.zip", max_age=0)
+    except ValueError as e:
+        flash(str(e), "error")
+    except ProfileNotExistsException:
+        flash("Perfil não encontrado.", "error")
+    except TwoFactorAuthRequiredException:
+        flash("Essa conta tem 2FA. Use IG_SESSION_B64 ou IG_COOKIES_JSON.", "error")
+    except BadCredentialsException:
+        flash("Falha no login: usuário ou senha recusados. Confira as variáveis e faça Redeploy.", "error")
+    except (LoginException, LoginRequiredException, ConnectionException, InstaloaderException) as e:
+        flash(f"Erro: {type(e).__name__}: {e}", "error")
+    finally:
+        if 'root' in locals():
+            shutil.rmtree(root, ignore_errors=True)
+    return redirect(url_for("index"))
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8080")))
