@@ -40,10 +40,23 @@ def download_media_audio():
         workdir = MEDIA_AUDIO_DIR / jid
         workdir.mkdir(parents=True, exist_ok=True)
         template = str(workdir / "source.%(ext)s")
-        cmd = ["yt-dlp", "--no-playlist", "--max-filesize", "250M", "-x", "--audio-format", "mp3", "--audio-quality", "0", "-o", template, url]
+        cmd = [
+            "yt-dlp",
+            "--js-runtimes", "node",
+            "--no-playlist",
+            "--max-filesize", "250M",
+            "-x",
+            "--audio-format", "mp3",
+            "--audio-quality", "0",
+            "-o", template,
+            url,
+        ]
         result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=240)
         if result.returncode != 0:
-            raise RuntimeError((result.stderr or result.stdout or "Erro desconhecido")[-1800:])
+            detail = result.stderr or result.stdout or "Erro desconhecido"
+            if "Sign in to confirm" in detail or "not a bot" in detail:
+                raise RuntimeError("O YouTube bloqueou o IP da Railway e pediu confirmação de login/bot. Tente outro link, aguarde, ou use upload manual/arquivo já baixado.")
+            raise RuntimeError(detail[-1800:])
         files = list(workdir.glob("*.mp3"))
         if not files:
             raise RuntimeError("Nenhum MP3 foi encontrado depois do processamento.")
