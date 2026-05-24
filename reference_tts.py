@@ -30,9 +30,34 @@ RESULT_HTML = """
 <style>:root{color-scheme:dark}body{margin:0;font-family:Inter,system-ui,Arial;background:#0f1115;color:#f4f4f5}main{max-width:1050px;margin:auto;padding:42px 20px}.card{background:#171a21;border:1px solid #2b2f3a;border-radius:22px;padding:28px}h1{margin:0 0 10px;font-size:32px}p{color:#c7cbda;line-height:1.55}.btn{display:inline-block;text-align:center;text-decoration:none;margin-top:14px;padding:13px 16px;border:0;border-radius:14px;background:#f4f4f5;color:#111827;font-weight:800;font-size:15px}.btn2{background:#252a35;color:#f4f4f5;border:1px solid #3a3f4c}.actions{display:flex;gap:10px;flex-wrap:wrap}.transcript{white-space:pre-wrap;background:#101319;border:1px solid #2b2f3a;border-radius:14px;padding:14px;color:#e5e7eb}audio{width:100%;margin:16px 0}</style></head>
 <body><main><div class="card"><h1>Áudio gerado</h1><p>Preview do MP3 criado pelo app.</p>
 <audio controls preload="metadata" src="{{audio_url}}"></audio>
-<div class="actions"><a class="btn" href="{{download_url}}">Baixar MP3</a><a class="btn btn2" href="{{url_for('index')}}">Voltar</a></div>
+<div class="actions"><button class="btn" type="button" onclick="downloadMp3('{{download_url}}', '{{filename}}')">Baixar MP3</button><a class="btn btn2" href="{{url_for('index')}}">Voltar</a></div>
 {% if reference_text %}<h2>Transcrição automática usada como referência</h2><div class="transcript">{{reference_text}}</div>{% endif %}
-</div></main></body></html>
+</div></main><script>
+async function downloadMp3(url, filename) {
+  const btn = event.target;
+  const original = btn.innerText;
+  try {
+    btn.disabled = true;
+    btn.innerText = "Preparando download...";
+    const resp = await fetch(url, { credentials: "same-origin" });
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    const blob = await resp.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = objectUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 30000);
+  } catch (e) {
+    alert("Erro ao baixar MP3: " + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.innerText = original;
+  }
+}
+</script></body></html>
 """
 
 
@@ -356,10 +381,20 @@ def normalize_output_mp3(output_bytes):
         output_path = workdir / "output.mp3"
         input_path.write_bytes(output_bytes)
         run_checked([
-            "ffmpeg", "-y", "-i", str(input_path), "-vn", "-codec:a", "libmp3lame", "-b:a", "192k", str(output_path)
+            "ffmpeg", "-y", "-i", str(input_path), "-vn", "-map_metadata", "-1", "-ac", "2", "-ar", "44100",
+            "-codec:a", "libmp3lame", "-b:a", "192k", "-write_xing", "1", "-id3v2_version", "3", str(output_path)
         ], "Falha ao normalizar o MP3 gerado")
-        if not output_path.exists() or output_path.stat().st_size == 0:
-            raise RuntimeError("Não foi possível normalizar o MP3 gerado.")
+        if not output_path.exists() or output_path.stat().st_size <= 1000:
+            raise RuntimeError("Não foi possível normalizar o MP3 gerado em um arquivo válido.")
+        probe = run_checked([
+            "ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", str(output_path)
+        ], "Falha ao validar a duração do MP3 gerado")
+        try:
+            duration = float((probe.stdout or "").strip())
+        except ValueError:
+            raise RuntimeError("O MP3 gerado não retornou uma duração válida. Tente gerar novamente.")
+        if not duration > 0:
+            raise RuntimeError("O MP3 gerado ficou com duração inválida. Tente gerar novamente.")
         return output_path.read_bytes()
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
@@ -377,6 +412,7 @@ def render_audio_result(filename, reference_text=""):
         RESULT_HTML,
         audio_url=url_for("ref_tts_audio", filename=filename),
         download_url=url_for("ref_tts_download", filename=filename),
+        filename=filename,
         reference_text=reference_text,
     )
 
