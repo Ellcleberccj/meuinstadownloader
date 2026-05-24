@@ -54,17 +54,24 @@ def download_media_audio():
 '''
     s = s.replace('\n@app.post("/download")', route + '\n@app.post("/download")')
 
+reference_seconds_field = '''<label>Duração da referência em segundos</label><input type="number" name="reference_seconds" value="30" min="10" max="60">
+<p class="small">Para melhor qualidade, use pelo menos 10 segundos de voz limpa. O ideal é 30-60 segundos, sem música, sem ruído e com apenas uma pessoa falando.</p>
+'''
+
 if 'make_ref_tts' not in s:
     marker = '<form method="post" action="{{url_for(\'test_login\')}}"><button class="btn2">Testar login configurado</button></form>'
     form = '''<form method="post" action="{{url_for('make_ref_tts')}}">
 <h2>Gerar áudio com minha voz</h2>
 <label>Link da mídia própria ou autorizada</label><input name="url" placeholder="Story, post, reels ou URL pública/autorizada de vídeo/mídia" required>
 <label>Texto novo para a voz falar</label><textarea name="text" placeholder="Digite aqui o texto que será falado..." required></textarea>
-<div class="checkrow"><input id="consent" type="checkbox" name="consent" value="yes" required><label for="consent">Confirmo que esta é minha voz ou tenho autorização para usá-la.</label></div>
+''' + reference_seconds_field + '''<div class="checkrow"><input id="consent" type="checkbox" name="consent" value="yes" required><label for="consent">Confirmo que esta é minha voz ou tenho autorização para usá-la.</label></div>
 <button>Gerar áudio com minha voz</button>
 </form>
 ''' + marker
     s = s.replace(marker, form)
+elif 'reference_seconds' not in s:
+    consent_row = '<div class="checkrow"><input id="consent" type="checkbox" name="consent" value="yes" required><label for="consent">Confirmo que esta é minha voz ou tenho autorização para usá-la.</label></div>'
+    s = s.replace(consent_row, reference_seconds_field + consent_row)
 
 if 'reference_tts.register(' not in s:
     registration = '''
