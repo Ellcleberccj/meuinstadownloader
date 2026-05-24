@@ -9,6 +9,7 @@ import threading
 import zipfile
 from functools import wraps
 from pathlib import Path
+from urllib.parse import urlparse
 
 from flask import Flask, Response, flash, redirect, render_template_string, request, send_file, url_for
 import instaloader
@@ -24,14 +25,25 @@ LOCK = threading.Lock()
 USERNAME_RE = re.compile(r"^[A-Za-z0-9._]{1,30}$")
 LAST_LOGIN_STATUS = {"ok": None, "message": "Ainda não foi feito teste de login."}
 
+CSS = """
+<style>:root{color-scheme:dark}body{margin:0;font-family:Inter,system-ui,Arial;background:#0f1115;color:#f4f4f5}main{max-width:1050px;margin:auto;padding:42px 20px}.card{background:#171a21;border:1px solid #2b2f3a;border-radius:22px;padding:28px}h1{margin:0 0 10px;font-size:32px}p{color:#c7cbda;line-height:1.55}label{display:block;margin:22px 0 8px;font-weight:700}input{width:100%;box-sizing:border-box;padding:14px 16px;border-radius:14px;border:1px solid #3a3f4c;background:#0f1115;color:white;font-size:16px}button,.btn{display:inline-block;text-align:center;text-decoration:none;margin-top:14px;padding:13px 16px;border:0;border-radius:14px;background:#f4f4f5;color:#111827;font-weight:800;font-size:15px;cursor:pointer}.btn2{background:#252a35;color:#f4f4f5;border:1px solid #3a3f4c}.msg{padding:12px 14px;border-radius:14px;margin:16px 0;background:#312320;color:#ffd7c2;border:1px solid #744534}.ok{background:#172b1c;color:#c9f7d2;border-color:#2f6840}code{background:#0f1115;border:1px solid #2b2f3a;border-radius:8px;padding:2px 6px}a{color:#dbeafe}.note{font-size:14px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:18px;margin-top:22px}.story{background:#101319;border:1px solid #2b2f3a;border-radius:18px;padding:12px}.story img,.story video{width:100%;border-radius:14px;background:#050507;max-height:420px;object-fit:contain}.actions{display:flex;gap:10px;flex-wrap:wrap}.actions .btn,.actions button{flex:1}.small{font-size:13px;color:#9ca3af}</style>
+"""
+
 HTML = """
-<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Insta Downloader</title>
-<style>:root{color-scheme:dark}body{margin:0;font-family:Inter,system-ui,Arial;background:#0f1115;color:#f4f4f5}main{max-width:760px;margin:auto;padding:48px 20px}.card{background:#171a21;border:1px solid #2b2f3a;border-radius:22px;padding:28px}h1{margin:0 0 10px;font-size:32px}p{color:#c7cbda;line-height:1.55}label{display:block;margin:22px 0 8px;font-weight:700}input{width:100%;box-sizing:border-box;padding:14px 16px;border-radius:14px;border:1px solid #3a3f4c;background:#0f1115;color:white;font-size:16px}button{margin-top:20px;width:100%;padding:15px;border:0;border-radius:14px;background:#f4f4f5;color:#111827;font-weight:800;font-size:16px;cursor:pointer}.msg{padding:12px 14px;border-radius:14px;margin:16px 0;background:#312320;color:#ffd7c2;border:1px solid #744534}.ok{background:#172b1c;color:#c9f7d2;border-color:#2f6840}code{background:#0f1115;border:1px solid #2b2f3a;border-radius:8px;padding:2px 6px}a{color:#dbeafe}.note{font-size:14px}</style></head>
-<body><main><div class="card"><h1>Baixar stories do Instagram</h1><p>Digite o @ de um perfil para baixar os stories disponíveis em ZIP. Use apenas com conteúdo público, próprio ou autorizado.</p>
+<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Insta Downloader</title>""" + CSS + """</head>
+<body><main><div class="card"><h1>Baixar stories do Instagram</h1><p>Digite o @ de um perfil para ver preview dos stories e escolher qual baixar, ou baixe todos em ZIP.</p>
 {% with messages=get_flashed_messages(with_categories=true) %}{% for c,m in messages %}<div class="msg {{'ok' if c=='ok' else ''}}">{{m}}</div>{% endfor %}{% endwith %}
-<form method="post" action="{{url_for('download')}}"><label>Usuário do Instagram</label><input name="username" placeholder="exemplo: instagram" required><button>Baixar stories em ZIP</button></form>
-<form method="post" action="{{url_for('test_login')}}"><button>Testar login configurado</button></form>
+<form method="get" action="{{url_for('preview')}}"><label>Usuário do Instagram</label><input name="username" placeholder="exemplo: instagram" required><button>Ver preview dos stories</button></form>
+<form method="post" action="{{url_for('download')}}"><label>Baixar todos em ZIP</label><input name="username" placeholder="exemplo: instagram" required><button>Baixar todos os stories em ZIP</button></form>
+<form method="get" action="{{url_for('download_from_link')}}"><label>Link de um story específico</label><input name="url" placeholder="https://www.instagram.com/stories/usuario/123456789/"><button>Baixar story pelo link</button></form>
+<form method="post" action="{{url_for('test_login')}}"><button class="btn2">Testar login configurado</button></form>
 <p class="note">Debug: <a href="{{url_for('debug_env')}}">/debug-env</a>. Após mudar variáveis na Railway, faça Redeploy.</p></div></main></body></html>
+"""
+
+PREVIEW_HTML = """
+<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Preview stories</title>""" + CSS + """</head>
+<body><main><div class="card"><h1>Stories de @{{username}}</h1><p>Escolha um story para baixar individualmente ou baixe todos em ZIP.</p><div class="actions"><a class="btn btn2" href="{{url_for('index')}}">Voltar</a><form method="post" action="{{url_for('download')}}" style="flex:1"><input type="hidden" name="username" value="{{username}}"><button>Baixar todos em ZIP</button></form></div>
+{% if not items %}<div class="msg">Nenhum story disponível encontrado.</div>{% endif %}<div class="grid">{% for s in items %}<div class="story">{% if s.is_video %}<video controls preload="metadata" src="{{s.preview_url}}"></video>{% else %}<img src="{{s.preview_url}}" alt="story {{loop.index}}">{% endif %}<p class="small">{{loop.index}} · {{s.kind}} · ID {{s.mediaid}}</p><div class="actions"><a class="btn" href="{{url_for('download_one', username=username, mediaid=s.mediaid)}}">Baixar este</a><a class="btn btn2" target="_blank" href="{{s.preview_url}}">Abrir mídia</a></div></div>{% endfor %}</div></div></main></body></html>
 """
 
 def clean(name, default=""):
@@ -57,6 +69,13 @@ def normalize_user(v):
     if not USERNAME_RE.fullmatch(v):
         raise ValueError("Usuário inválido. Use apenas o @ ou a URL do perfil.")
     return v
+
+def parse_story_link(link):
+    parsed = urlparse((link or "").strip())
+    parts = [p for p in parsed.path.split("/") if p]
+    if len(parts) >= 3 and parts[0] == "stories":
+        return normalize_user(parts[1]), parts[2]
+    raise ValueError("Link inválido. Use um link no formato https://www.instagram.com/stories/usuario/id/")
 
 def make_loader(root: Path):
     L = instaloader.Instaloader(dirname_pattern=str(root / "{target}"), filename_pattern="{date_utc}_UTC_{mediaid}", download_pictures=True, download_videos=True, download_video_thumbnails=False, download_geotags=False, download_comments=False, save_metadata=False, compress_json=False, quiet=True, request_timeout=120, max_connection_attempts=2, sanitize_paths=True)
@@ -91,6 +110,18 @@ def make_loader(root: Path):
         raise LoginRequiredException("Senha carregada, mas o Instagram não confirmou login. Use IG_SESSION_B64 ou IG_COOKIES_JSON.")
     L.save_session_to_file(str(session_path))
     return L
+
+def iter_story_items(L, username):
+    profile = Profile.from_username(L.context, username)
+    for story in L.get_stories(userids=[profile.userid]):
+        for item in story.get_items():
+            yield item
+
+def story_media_id(item):
+    return str(getattr(item, "mediaid", "") or getattr(item, "media_id", "") or getattr(item, "shortcode", ""))
+
+def item_preview_url(item):
+    return item.video_url if getattr(item, "is_video", False) else item.url
 
 def zip_dir(root):
     buf = io.BytesIO()
@@ -132,6 +163,64 @@ def test_login():
         shutil.rmtree(root, ignore_errors=True)
     return redirect(url_for("index"))
 
+@app.get("/preview")
+@auth_required
+def preview():
+    root = Path(tempfile.mkdtemp(prefix="preview_"))
+    try:
+        username = normalize_user(request.args.get("username", ""))
+        with LOCK:
+            L = make_loader(root)
+            items = []
+            for item in iter_story_items(L, username):
+                mid = story_media_id(item)
+                if mid:
+                    items.append({"mediaid": mid, "is_video": bool(getattr(item, "is_video", False)), "kind": "vídeo" if getattr(item, "is_video", False) else "foto", "preview_url": item_preview_url(item)})
+        return render_template_string(PREVIEW_HTML, username=username, items=items)
+    except Exception as e:
+        flash(f"Erro ao gerar preview: {type(e).__name__}: {e}", "error")
+        return redirect(url_for("index"))
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+@app.get("/download-one/<username>/<mediaid>")
+@auth_required
+def download_one(username, mediaid):
+    root = Path(tempfile.mkdtemp(prefix="story_one_"))
+    try:
+        username = normalize_user(username)
+        with LOCK:
+            L = make_loader(root)
+            found = None
+            for item in iter_story_items(L, username):
+                if story_media_id(item) == str(mediaid):
+                    found = item
+                    break
+            if not found:
+                flash("Story não encontrado. Ele pode ter expirado ou não estar mais disponível.", "error")
+                return redirect(url_for("preview", username=username))
+            L.download_storyitem(found, target=username)
+        files = [f for f in root.rglob("*") if f.is_file()]
+        media_files = [f for f in files if f.suffix.lower() in [".jpg", ".jpeg", ".png", ".mp4"]]
+        if not media_files:
+            flash("Não consegui encontrar o arquivo baixado.", "error")
+            return redirect(url_for("preview", username=username))
+        f = media_files[0]
+        return send_file(f, as_attachment=True, download_name=f.name, max_age=0)
+    except Exception as e:
+        flash(f"Erro ao baixar story: {type(e).__name__}: {e}", "error")
+        return redirect(url_for("index"))
+
+@app.get("/download-link")
+@auth_required
+def download_from_link():
+    try:
+        username, mediaid = parse_story_link(request.args.get("url", ""))
+        return redirect(url_for("download_one", username=username, mediaid=mediaid))
+    except Exception as e:
+        flash(str(e), "error")
+        return redirect(url_for("index"))
+
 @app.post("/download")
 @auth_required
 def download():
@@ -140,12 +229,10 @@ def download():
         root = Path(tempfile.mkdtemp(prefix="stories_"))
         with LOCK:
             L = make_loader(root)
-            profile = Profile.from_username(L.context, target)
             count = 0
-            for story in L.get_stories(userids=[profile.userid]):
-                for item in story.get_items():
-                    if L.download_storyitem(item, target=target):
-                        count += 1
+            for item in iter_story_items(L, target):
+                if L.download_storyitem(item, target=target):
+                    count += 1
         if count == 0:
             flash("Nenhum story disponível foi encontrado para esse perfil pela conta logada.", "error")
             return redirect(url_for("index"))
