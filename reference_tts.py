@@ -51,6 +51,8 @@ def register(app, auth_required, data_dir, lock, loader_fn, story_iter_fn, story
     app.add_url_rule("/make-ref-tts", "make_ref_tts", auth_required(make_ref_tts), methods=["POST"])
     app.add_url_rule("/create-fish-voice", "create_fish_voice", auth_required(create_fish_voice), methods=["POST"])
     app.add_url_rule("/generate-fish-voice", "generate_fish_voice", auth_required(generate_fish_voice), methods=["POST"])
+    app.add_url_rule("/ref-tts-audio/<filename>", "ref_tts_audio", auth_required(ref_tts_audio), methods=["GET"])
+    app.add_url_rule("/ref-tts-download/<filename>", "ref_tts_download", auth_required(ref_tts_download), methods=["GET"])
     app.add_url_rule("/ref-tts-output/<filename>", "ref_tts_output", auth_required(ref_tts_output), methods=["GET"])
 
 
@@ -347,6 +349,22 @@ def prune_ref_tts_outputs(max_age_seconds=24 * 60 * 60):
             pass
 
 
+def normalize_output_mp3(output_bytes):
+    workdir = Path(tempfile.mkdtemp(prefix="fish_mp3_"))
+    try:
+        input_path = workdir / "input.mp3"
+        output_path = workdir / "output.mp3"
+        input_path.write_bytes(output_bytes)
+        run_checked([
+            "ffmpeg", "-y", "-i", str(input_path), "-vn", "-codec:a", "libmp3lame", "-b:a", "192k", str(output_path)
+        ], "Falha ao normalizar o MP3 gerado")
+        if not output_path.exists() or output_path.stat().st_size == 0:
+            raise RuntimeError("Não foi possível normalizar o MP3 gerado.")
+        return output_path.read_bytes()
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
 def save_output_mp3(output_bytes):
     filename = f"{uuid.uuid4().hex}.mp3"
     output_path = REF_TTS_DIR / filename
@@ -357,8 +375,8 @@ def save_output_mp3(output_bytes):
 def render_audio_result(filename, reference_text=""):
     return render_template_string(
         RESULT_HTML,
-        audio_url=url_for("ref_tts_output", filename=filename),
-        download_url=url_for("ref_tts_output", filename=filename, download=1),
+        audio_url=url_for("ref_tts_audio", filename=filename),
+        download_url=url_for("ref_tts_download", filename=filename),
         reference_text=reference_text,
     )
 
@@ -383,6 +401,7 @@ def make_ref_tts():
         reference_audio = extract_reference_audio(media_url, workdir, reference_seconds)
         reference_text = fish_asr(reference_audio)
         output_bytes = fish_tts_with_reference(target_text, reference_audio, reference_text)
+        output_bytes = normalize_output_mp3(output_bytes)
         filename = save_output_mp3(output_bytes)
         return render_audio_result(filename, reference_text)
     except Exception as exc:
@@ -435,6 +454,7 @@ def generate_fish_voice():
     try:
         prune_ref_tts_outputs()
         output_bytes = fish_tts_with_saved_voice(target_text, model_id)
+        output_bytes = normalize_output_mp3(output_bytes)
         filename = save_output_mp3(output_bytes)
         return render_audio_result(filename)
     except Exception as exc:
@@ -445,6 +465,15 @@ def generate_fish_voice():
 def content_disposition(filename, download):
     disposition = "attachment" if download else "inline"
     return f'{disposition}; filename="{filename}"'
+
+
+def ref_tts_path(filename):
+    if not REF_TTS_FILENAME_RE.fullmatch(filename or ""):
+        return None
+    path = REF_TTS_DIR / filename
+    if not path.exists():
+        return None
+    return path
 
 
 def parse_range_header(range_header, size):
@@ -471,16 +500,18 @@ def parse_range_header(range_header, size):
 def send_mp3_with_range(path, filename, download=False):
     size = path.stat().st_size
     headers = {
-        "Accept-Ranges": "bytes",
         "Content-Type": "audio/mpeg",
+        "Accept-Ranges": "bytes",
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "private, max-age=3600",
         "Content-Disposition": content_disposition(filename, download),
-        "Cache-Control": "no-store",
     }
     range_header = request.headers.get("Range")
     if range_header:
         byte_range = parse_range_header(range_header, size)
         if byte_range is None:
             headers["Content-Range"] = f"bytes */{size}"
+            headers["Content-Length"] = "0"
             return Response(status=416, headers=headers)
         start, end = byte_range
         length = end - start + 1
@@ -497,10 +528,22 @@ def send_mp3_with_range(path, filename, download=False):
     return Response(path.read_bytes(), status=200, headers=headers)
 
 
+def ref_tts_audio(filename):
+    path = ref_tts_path(filename)
+    if path is None:
+        return Response("Arquivo não encontrado.", 404)
+    return send_mp3_with_range(path, filename, download=False)
+
+
+def ref_tts_download(filename):
+    path = ref_tts_path(filename)
+    if path is None:
+        return Response("Arquivo não encontrado.", 404)
+    return send_mp3_with_range(path, filename, download=True)
+
+
 def ref_tts_output(filename):
-    if not REF_TTS_FILENAME_RE.fullmatch(filename or ""):
-        return Response("Arquivo inválido.", 404)
-    path = REF_TTS_DIR / filename
-    if not path.exists():
+    path = ref_tts_path(filename)
+    if path is None:
         return Response("Arquivo não encontrado.", 404)
     return send_mp3_with_range(path, filename, download=request.args.get("download") == "1")
