@@ -112,6 +112,28 @@ reference_tts.register(
 '''
     s = s.replace('\nif __name__ == "__main__":', registration + '\nif __name__ == "__main__":')
 
+if 'def create_fish_voice_get' not in s:
+    get_routes = '''
+@app.get("/make-ref-tts")
+@auth_required
+def make_ref_tts_get():
+    flash("Use o formulário Gerar áudio com minha voz na página inicial.", "error")
+    return redirect(url_for("index"))
+
+@app.get("/create-fish-voice")
+@auth_required
+def create_fish_voice_get():
+    flash("Use o formulário Criar voz privada na página inicial.", "error")
+    return redirect(url_for("index"))
+
+@app.get("/generate-fish-voice")
+@auth_required
+def generate_fish_voice_get():
+    flash("Use o formulário Gerar com voz salva na página inicial.", "error")
+    return redirect(url_for("index"))
+'''
+    s = s.replace('\nif __name__ == "__main__":', get_routes + '\nif __name__ == "__main__":')
+
 if 'saved_voices=reference_tts.load_saved_voices()' not in s:
     s = s.replace('return render_template_string(HTML)', 'return render_template_string(HTML, saved_voices=reference_tts.load_saved_voices())')
 
