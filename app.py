@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 
 from flask import Flask, Response, flash, redirect, render_template_string, request, send_file, url_for
 import instaloader
-from instaloader import Profile
+from instaloader import Profile, Post
 from instaloader.exceptions import BadCredentialsException, ConnectionException, InstaloaderException, LoginException, LoginRequiredException, ProfileNotExistsException, TwoFactorAuthRequiredException
 
 app = Flask(__name__)
@@ -31,11 +31,12 @@ CSS = """
 
 HTML = """
 <!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Insta Downloader</title>""" + CSS + """</head>
-<body><main><div class="card"><h1>Baixar stories do Instagram</h1><p>Digite o @ de um perfil para ver preview dos stories e escolher qual baixar, ou baixe todos em ZIP.</p>
+<body><main><div class="card"><h1>Insta Downloader</h1><p>Baixe stories, posts e reels disponíveis para a conta logada.</p>
 {% with messages=get_flashed_messages(with_categories=true) %}{% for c,m in messages %}<div class="msg {{'ok' if c=='ok' else ''}}">{{m}}</div>{% endfor %}{% endwith %}<div id="loadingBox" class="loading"></div>
-<form method="get" action="{{url_for('preview')}}"><label>Usuário do Instagram</label><input name="username" placeholder="exemplo: instagram" required><button>Ver preview dos stories</button></form>
-<form method="post" action="{{url_for('download')}}"><label>Baixar todos em ZIP</label><input name="username" placeholder="exemplo: instagram" required><button>Baixar todos os stories em ZIP</button></form>
+<form method="get" action="{{url_for('preview')}}"><label>Usuário do Instagram para stories</label><input name="username" placeholder="exemplo: instagram" required><button>Ver preview dos stories</button></form>
+<form method="post" action="{{url_for('download')}}"><label>Baixar todos os stories em ZIP</label><input name="username" placeholder="exemplo: instagram" required><button>Baixar todos os stories em ZIP</button></form>
 <form method="get" action="{{url_for('download_from_link')}}"><label>Link de um story específico</label><input name="url" placeholder="https://www.instagram.com/stories/usuario/123456789/"><button>Baixar story pelo link</button></form>
+<form method="get" action="{{url_for('download_post_link')}}"><label>Link de post/reels</label><input name="url" placeholder="https://www.instagram.com/reel/CODIGO/ ou https://www.instagram.com/p/CODIGO/" required><button>Baixar post/reels</button></form>
 <form method="post" action="{{url_for('test_login')}}"><button class="btn2">Testar login configurado</button></form>
 <p class="note">Debug: <a href="{{url_for('debug_env')}}">/debug-env</a>. Após mudar variáveis na Railway, faça Redeploy.</p></div></main></body></html>
 """
@@ -76,6 +77,13 @@ def parse_story_link(link):
     if len(parts) >= 3 and parts[0] == "stories":
         return normalize_user(parts[1]), parts[2]
     raise ValueError("Link inválido. Use um link no formato https://www.instagram.com/stories/usuario/id/")
+
+def parse_post_shortcode(link):
+    parsed = urlparse((link or "").strip())
+    parts = [p for p in parsed.path.split("/") if p]
+    if len(parts) >= 2 and parts[0] in {"p", "reel", "tv"}:
+        return parts[1]
+    raise ValueError("Link inválido. Use um link de post, reels ou IGTV do Instagram.")
 
 def make_loader(root: Path):
     L = instaloader.Instaloader(dirname_pattern=str(root / "{target}"), filename_pattern="{date_utc}_UTC_{mediaid}", download_pictures=True, download_videos=True, download_video_thumbnails=False, download_geotags=False, download_comments=False, save_metadata=False, compress_json=False, quiet=True, request_timeout=120, max_connection_attempts=2, sanitize_paths=True)
@@ -122,6 +130,9 @@ def story_media_id(item):
 
 def item_preview_url(item):
     return item.video_url if getattr(item, "is_video", False) else item.url
+
+def media_files(root):
+    return [f for f in root.rglob("*") if f.is_file() and f.suffix.lower() in [".jpg", ".jpeg", ".png", ".mp4"]]
 
 def zip_dir(root):
     buf = io.BytesIO()
@@ -200,13 +211,11 @@ def download_one(username, mediaid):
                 flash("Story não encontrado. Ele pode ter expirado ou não estar mais disponível.", "error")
                 return redirect(url_for("preview", username=username))
             L.download_storyitem(found, target=username)
-        files = [f for f in root.rglob("*") if f.is_file()]
-        media_files = [f for f in files if f.suffix.lower() in [".jpg", ".jpeg", ".png", ".mp4"]]
-        if not media_files:
+        files = media_files(root)
+        if not files:
             flash("Não consegui encontrar o arquivo baixado.", "error")
             return redirect(url_for("preview", username=username))
-        f = media_files[0]
-        return send_file(f, as_attachment=True, download_name=f.name, max_age=0)
+        return send_file(files[0], as_attachment=True, download_name=files[0].name, max_age=0)
     except Exception as e:
         flash(f"Erro ao baixar story: {type(e).__name__}: {e}", "error")
         return redirect(url_for("index"))
@@ -220,6 +229,29 @@ def download_from_link():
     except Exception as e:
         flash(str(e), "error")
         return redirect(url_for("index"))
+
+@app.get("/download-post")
+@auth_required
+def download_post_link():
+    root = Path(tempfile.mkdtemp(prefix="post_"))
+    try:
+        shortcode = parse_post_shortcode(request.args.get("url", ""))
+        with LOCK:
+            L = make_loader(root)
+            post = Post.from_shortcode(L.context, shortcode)
+            L.download_post(post, target=f"post_{shortcode}")
+        files = media_files(root)
+        if not files:
+            flash("Não consegui encontrar mídia nesse post/reels.", "error")
+            return redirect(url_for("index"))
+        if len(files) == 1:
+            return send_file(files[0], as_attachment=True, download_name=files[0].name, max_age=0)
+        return send_file(zip_dir(root), mimetype="application/zip", as_attachment=True, download_name=f"post_{shortcode}.zip", max_age=0)
+    except Exception as e:
+        flash(f"Erro ao baixar post/reels: {type(e).__name__}: {e}", "error")
+        return redirect(url_for("index"))
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
 
 @app.post("/download")
 @auth_required
