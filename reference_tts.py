@@ -9,7 +9,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import msgpack
 import requests
@@ -28,17 +28,20 @@ parse_post_shortcode = None
 
 RESULT_HTML = """
 <!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Áudio gerado</title>
-<style>:root{color-scheme:dark}body{margin:0;font-family:Inter,system-ui,Arial;background:#0f1115;color:#f4f4f5}main{max-width:1050px;margin:auto;padding:42px 20px}.card{background:#171a21;border:1px solid #2b2f3a;border-radius:22px;padding:28px}h1{margin:0 0 10px;font-size:32px}p{color:#c7cbda;line-height:1.55}.playerBox{margin:22px 0;padding:16px;background:#101319;border:1px solid #2b2f3a;border-radius:18px}.status{font-size:14px;color:#aeb4c4;margin-top:8px}.btn,button.btn{display:inline-block;text-align:center;text-decoration:none;margin-top:14px;padding:13px 16px;border:0;border-radius:14px;background:#f4f4f5;color:#111827;font-weight:800;font-size:15px;cursor:pointer}.btn2{background:#252a35;color:#f4f4f5;border:1px solid #3a3f4c}.actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.actions form{margin:0}.transcript{white-space:pre-wrap;background:#101319;border:1px solid #2b2f3a;border-radius:14px;padding:14px;color:#e5e7eb}audio{width:100%;display:block}button[disabled]{opacity:.65;cursor:wait}.spin{display:inline-block;width:15px;height:15px;border:2px solid #596273;border-top-color:white;border-radius:50%;animation:s .8s linear infinite;margin-right:8px;vertical-align:-2px}@keyframes s{to{transform:rotate(360deg)}}@media(max-width:640px){main{padding:24px 14px}.card{padding:20px}.actions{display:block}.btn,button.btn{width:100%;box-sizing:border-box}}</style></head>
-<body><main><div class="card"><h1>Áudio gerado</h1><p>O MP3 está carregado nesta página. Você pode ouvir, baixar ou regenerar sem abrir uma rota de arquivo separada.</p>
+<style>:root{color-scheme:dark}body{margin:0;font-family:Inter,system-ui,Arial;background:#0f1115;color:#f4f4f5}main{max-width:1050px;margin:auto;padding:42px 20px}.card{background:#171a21;border:1px solid #2b2f3a;border-radius:22px;padding:28px}h1{margin:0 0 10px;font-size:32px}p{color:#c7cbda;line-height:1.55}.playerBox{margin:22px 0;padding:16px;background:#101319;border:1px solid #2b2f3a;border-radius:18px}.status{font-size:14px;color:#aeb4c4;margin-top:8px}.btn,button.btn{display:inline-block;text-align:center;text-decoration:none;margin-top:14px;padding:13px 16px;border:0;border-radius:14px;background:#f4f4f5;color:#111827;font-weight:800;font-size:15px;cursor:pointer}.btn2{background:#252a35;color:#f4f4f5;border:1px solid #3a3f4c}.actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.actions form{margin:0}.transcript,.cloudbox{white-space:pre-wrap;background:#101319;border:1px solid #2b2f3a;border-radius:14px;padding:14px;color:#e5e7eb;margin-top:16px}.cloudbox input{width:100%;box-sizing:border-box;padding:12px 14px;border-radius:12px;border:1px solid #3a3f4c;background:#0f1115;color:#e5e7eb;font-size:15px}.msg{padding:12px 14px;border-radius:14px;margin:16px 0;background:#312320;color:#ffd7c2;border:1px solid #744534}.ok{background:#172b1c;color:#c9f7d2;border-color:#2f6840}audio{width:100%;display:block}button[disabled]{opacity:.65;cursor:wait}.spin{display:inline-block;width:15px;height:15px;border:2px solid #596273;border-top-color:white;border-radius:50%;animation:s .8s linear infinite;margin-right:8px;vertical-align:-2px}@keyframes s{to{transform:rotate(360deg)}}@media(max-width:640px){main{padding:24px 14px}.card{padding:20px}.actions{display:block}.btn,button.btn{width:100%;box-sizing:border-box}}</style></head>
+<body><main><div class="card"><h1>Áudio gerado</h1>{% with messages=get_flashed_messages(with_categories=true) %}{% for c,m in messages %}<div class="msg {{'ok' if c=='ok' else ''}}">{{m}}</div>{% endfor %}{% endwith %}<p>O MP3 está carregado nesta página. Você pode ouvir, baixar, subir para o Cloudflare R2 ou regenerar sem abrir uma rota de arquivo separada.</p>
 <div class="playerBox"><audio id="generatedAudio" controls preload="auto" src="data:audio/mpeg;base64,{{audio_b64}}"></audio><div id="audioStatus" class="status">Carregando preview...</div></div>
 <div class="actions">
 <a class="btn btn2" href="data:audio/mpeg;base64,{{audio_b64}}" download="{{filename}}">Baixar MP3</a>
+<form method="post" action="{{url_for('upload_ref_tts_r2')}}"><input type="hidden" name="filename" value="{{filename}}"><input type="hidden" name="reference_text" value="{{reference_text}}">{% if regenerate %}<input type="hidden" name="regenerate_action" value="{{regenerate.action_url}}">{% for name, value in regenerate.fields.items() %}<input type="hidden" name="regen_{{name}}" value="{{value}}">{% endfor %}{% endif %}<button class="btn" type="submit">Upload no Cloudflare R2 bucket</button></form>
 {% if regenerate %}<form method="post" action="{{regenerate.action_url}}">{% for name, value in regenerate.fields.items() %}<input type="hidden" name="{{name}}" value="{{value}}">{% endfor %}<button class="btn" type="submit">Regenerar</button></form>{% endif %}
 <a class="btn btn2" href="{{url_for('index')}}">Voltar</a>
 </div>
+{% if r2_url %}<div class="cloudbox"><h2>Link público no Cloudflare R2</h2><input id="r2Link" readonly value="{{r2_url}}"><div class="actions"><a class="btn" href="{{r2_url}}" target="_blank" rel="noopener">Abrir link público</a><button class="btn btn2" type="button" onclick="copyR2Link()">Copiar link</button></div></div>{% endif %}
 {% if reference_text %}<h2>Transcrição automática usada como referência</h2><div class="transcript">{{reference_text}}</div>{% endif %}
 </div></main><script>
-document.addEventListener('DOMContentLoaded',()=>{const audio=document.getElementById('generatedAudio');const status=document.getElementById('audioStatus');function fmt(s){if(!Number.isFinite(s)||s<=0)return'';const m=Math.floor(s/60);const r=Math.round(s%60).toString().padStart(2,'0');return m+':'+r}audio.addEventListener('loadedmetadata',()=>{const d=fmt(audio.duration);status.textContent=d?'Preview pronto. Duração: '+d:'Preview pronto.'});audio.addEventListener('canplay',()=>{if(status.textContent==='Carregando preview...')status.textContent='Preview pronto.'});audio.addEventListener('error',()=>{status.textContent='Não foi possível carregar o preview neste navegador. Tente regenerar o áudio.'});document.querySelectorAll('form').forEach(form=>form.addEventListener('submit',()=>{const b=form.querySelector('button');if(b){b.disabled=true;b.innerHTML='<span class="spin"></span>Regenerando...'}}));audio.load()});
+document.addEventListener('DOMContentLoaded',()=>{const audio=document.getElementById('generatedAudio');const status=document.getElementById('audioStatus');function fmt(s){if(!Number.isFinite(s)||s<=0)return'';const m=Math.floor(s/60);const r=Math.round(s%60).toString().padStart(2,'0');return m+':'+r}audio.addEventListener('loadedmetadata',()=>{const d=fmt(audio.duration);status.textContent=d?'Preview pronto. Duração: '+d:'Preview pronto.'});audio.addEventListener('canplay',()=>{if(status.textContent==='Carregando preview...')status.textContent='Preview pronto.'});audio.addEventListener('error',()=>{status.textContent='Não foi possível carregar o preview neste navegador. Tente regenerar o áudio.'});document.querySelectorAll('form').forEach(form=>form.addEventListener('submit',()=>{const b=form.querySelector('button');if(b){b.disabled=true;b.innerHTML='<span class="spin"></span>Processando...'}}));audio.load()});
+function copyR2Link(){const el=document.getElementById('r2Link');if(!el)return;el.select();el.setSelectionRange(0,99999);navigator.clipboard&&navigator.clipboard.writeText?navigator.clipboard.writeText(el.value):document.execCommand('copy')}
 </script></body></html>
 """
 
@@ -58,6 +61,7 @@ def register(app, auth_required, data_dir, lock, loader_fn, story_iter_fn, story
     app.add_url_rule("/make-ref-tts", "make_ref_tts", auth_required(make_ref_tts), methods=["POST"])
     app.add_url_rule("/create-fish-voice", "create_fish_voice", auth_required(create_fish_voice), methods=["POST"])
     app.add_url_rule("/generate-fish-voice", "generate_fish_voice", auth_required(generate_fish_voice), methods=["POST"])
+    app.add_url_rule("/upload-r2-audio", "upload_ref_tts_r2", auth_required(upload_ref_tts_r2), methods=["POST"])
     app.add_url_rule("/media-file/<filename>", "media_file", auth_required(media_file), methods=["GET"])
     app.add_url_rule("/ref-tts-audio/<filename>", "ref_tts_audio", auth_required(ref_tts_audio), methods=["GET"])
     app.add_url_rule("/ref-tts-download/<filename>", "ref_tts_download", auth_required(ref_tts_download), methods=["GET"])
@@ -85,6 +89,14 @@ def fish_error_detail(response):
 def env_text(name, default):
     value = (os.getenv(name or "") or "").strip().strip('"').strip("'")
     return value or default
+
+
+def env_any(names, default=""):
+    for name in names:
+        value = env_text(name, "")
+        if value:
+            return value
+    return default
 
 
 def env_int(name, default):
@@ -397,13 +409,14 @@ def mp3_base64_for_result(filename):
     return base64.b64encode(path.read_bytes()).decode("ascii")
 
 
-def render_audio_result(filename, reference_text="", regenerate=None):
+def render_audio_result(filename, reference_text="", regenerate=None, r2_url=""):
     return render_template_string(
         RESULT_HTML,
         audio_b64=mp3_base64_for_result(filename),
         filename=filename,
         reference_text=reference_text,
         regenerate=regenerate,
+        r2_url=r2_url,
     )
 
 
@@ -502,6 +515,85 @@ def generate_fish_voice():
     except Exception as exc:
         flash(f"Erro ao gerar áudio com voz salva: {type(exc).__name__}: {exc}", "error")
         return redirect(url_for("index"))
+
+
+def cloudflare_r2_config():
+    account_id = env_any(["CLOUDFLARE_R2_ACCOUNT_ID", "R2_ACCOUNT_ID"])
+    access_key = env_any(["CLOUDFLARE_R2_ACCESS_KEY_ID", "R2_ACCESS_KEY_ID"])
+    secret_key = env_any(["CLOUDFLARE_R2_SECRET_ACCESS_KEY", "R2_SECRET_ACCESS_KEY"])
+    bucket = env_any(["CLOUDFLARE_R2_BUCKET", "R2_BUCKET"])
+    public_url = env_any(["CLOUDFLARE_R2_PUBLIC_URL", "R2_PUBLIC_URL"])
+    endpoint = env_any(["CLOUDFLARE_R2_ENDPOINT", "R2_ENDPOINT"], f"https://{account_id}.r2.cloudflarestorage.com" if account_id else "")
+    missing = []
+    if not account_id and not endpoint:
+        missing.append("CLOUDFLARE_R2_ACCOUNT_ID")
+    if not access_key:
+        missing.append("CLOUDFLARE_R2_ACCESS_KEY_ID")
+    if not secret_key:
+        missing.append("CLOUDFLARE_R2_SECRET_ACCESS_KEY")
+    if not bucket:
+        missing.append("CLOUDFLARE_R2_BUCKET")
+    if not public_url:
+        missing.append("CLOUDFLARE_R2_PUBLIC_URL")
+    if missing:
+        raise RuntimeError("Configure na Railway: " + ", ".join(missing) + ".")
+    return {
+        "endpoint": endpoint,
+        "access_key": access_key,
+        "secret_key": secret_key,
+        "bucket": bucket,
+        "public_url": public_url.rstrip("/"),
+    }
+
+
+def upload_mp3_to_r2(path, filename):
+    config = cloudflare_r2_config()
+    try:
+        import boto3
+    except ImportError as exc:
+        raise RuntimeError("Dependência boto3 não instalada. Faça redeploy após atualizar requirements.txt.") from exc
+    prefix = env_any(["CLOUDFLARE_R2_PREFIX", "R2_PREFIX"], "fish-audio").strip("/")
+    date_path = datetime.now(timezone.utc).strftime("%Y/%m/%d")
+    key = "/".join(part for part in [prefix, date_path, filename] if part)
+    client = boto3.client(
+        "s3",
+        endpoint_url=config["endpoint"],
+        aws_access_key_id=config["access_key"],
+        aws_secret_access_key=config["secret_key"],
+        region_name="auto",
+    )
+    client.upload_file(
+        str(path),
+        config["bucket"],
+        key,
+        ExtraArgs={"ContentType": "audio/mpeg", "CacheControl": "public, max-age=31536000"},
+    )
+    return f"{config['public_url']}/{quote(key, safe='/')}"
+
+
+def regenerate_from_request():
+    action_url = (request.form.get("regenerate_action") or "").strip()
+    fields = {key[6:]: value for key, value in request.form.items() if key.startswith("regen_")}
+    if not action_url or not fields:
+        return None
+    return {"action_url": action_url, "fields": fields}
+
+
+def upload_ref_tts_r2():
+    filename = (request.form.get("filename") or "").strip()
+    reference_text = request.form.get("reference_text") or ""
+    regenerate = regenerate_from_request()
+    path = ref_tts_path(filename)
+    if path is None:
+        flash("MP3 gerado não encontrado para upload.", "error")
+        return redirect(url_for("index"))
+    try:
+        r2_url = upload_mp3_to_r2(path, filename)
+        flash("Upload para o Cloudflare R2 concluído.", "ok")
+        return render_audio_result(filename, reference_text, regenerate, r2_url)
+    except Exception as exc:
+        flash(f"Erro ao enviar para o Cloudflare R2: {type(exc).__name__}: {exc}", "error")
+        return render_audio_result(filename, reference_text, regenerate)
 
 
 def ref_tts_path(filename):
