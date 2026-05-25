@@ -3,9 +3,17 @@ from pathlib import Path
 p = Path('app.py')
 s = p.read_text(encoding='utf-8')
 
+tag_script = """
+function textWithTag(text,start,end,tag){let before=text.slice(0,start);let after=text.slice(end);let insert=tag;if(before&&!/\s$/.test(before)){insert=' '+insert}if(after&&!/^\s/.test(after)){insert=insert+' '}if(!after){insert=insert+' '}return {text:before+insert+after,pos:(before+insert).length}}
+function insertTag(button,tag){let form=button.closest('form');let textarea=form?form.querySelector('textarea[name="text"],textarea[name="manual_target_text"],textarea'):null;if(!textarea){return}let hasFocus=document.activeElement===textarea;let start=hasFocus?textarea.selectionStart:textarea.value.length;let end=hasFocus?textarea.selectionEnd:textarea.value.length;let result=textWithTag(textarea.value,start,end,tag);textarea.value=result.text;textarea.focus();textarea.setSelectionRange(result.pos,result.pos)}
+function clearTags(button){let form=button.closest('form');let textarea=form?form.querySelector('textarea[name="text"],textarea[name="manual_target_text"],textarea'):null;if(!textarea){return}textarea.value=textarea.value.replace(/\s*(\[[^\]]+\]|\([A-Za-z][A-Za-z -]*\))\s*/g,' ').replace(/\s+/g,' ').trim();textarea.focus()}
+"""
+
 old = """document.addEventListener('DOMContentLoaded',()=>{document.querySelectorAll('form').forEach(f=>f.addEventListener('submit',()=>{let b=f.querySelector('button');let l=document.getElementById('loadingBox');if(b){b.disabled=true;b.innerHTML='<span class=\"spin\"></span>Processando...'}if(l){l.style.display='block';l.innerHTML='<span class=\"spin\"></span>Preparando. Aguarde, o download ou preview vai abrir automaticamente.'}}))})"""
-new = """document.addEventListener('DOMContentLoaded',()=>{document.querySelectorAll('form').forEach(f=>f.addEventListener('submit',()=>{let b=f.querySelector('button');let l=document.getElementById('loadingBox');let oldText=b?b.innerHTML:'';let action=(f.getAttribute('action')||'');let isDownload=action.includes('download')&&!action.includes('make-ref-tts');if(b){b.disabled=true;b.innerHTML='<span class=\"spin\"></span>Processando...'}if(l){l.style.display='block';l.innerHTML='<span class=\"spin\"></span>'+(isDownload?'Preparando download. Ele deve iniciar em instantes.':'Preparando. Aguarde...')}if(isDownload){setTimeout(()=>{if(b){b.disabled=false;b.innerHTML=oldText}if(l){l.innerHTML='Download iniciado. Se não abriu, tente clicar novamente.';setTimeout(()=>l.style.display='none',3500)}},9000)}}))})"""
+new = """document.addEventListener('DOMContentLoaded',()=>{document.querySelectorAll('form').forEach(f=>f.addEventListener('submit',()=>{let b=f.querySelector('button');let l=document.getElementById('loadingBox');let oldText=b?b.innerHTML:'';let action=(f.getAttribute('action')||'');let isDownload=action.includes('download')&&!action.includes('make-ref-tts');if(b){b.disabled=true;b.innerHTML='<span class=\"spin\"></span>Processando...'}if(l){l.style.display='block';l.innerHTML='<span class=\"spin\"></span>'+(isDownload?'Preparando download. Ele deve iniciar em instantes.':'Preparando. Aguarde...')}if(isDownload){setTimeout(()=>{if(b){b.disabled=false;b.innerHTML=oldText}if(l){l.innerHTML='Download iniciado. Se não abriu, tente clicar novamente.';setTimeout(()=>l.style.display='none',3500)}},9000)}}))})""" + tag_script
 s = s.replace(old, new)
+if 'function insertTag' not in s:
+    s = s.replace('</script>', tag_script + '</script>', 1)
 
 if 'import subprocess' not in s:
     s = s.replace('import zipfile\n', 'import zipfile\nimport subprocess\nimport uuid\n')
@@ -13,9 +21,12 @@ if 'import subprocess' not in s:
 if 'MEDIA_AUDIO_DIR' not in s:
     s = s.replace('SESSION_DIR = DATA_DIR / "sessions"\n', 'SESSION_DIR = DATA_DIR / "sessions"\nMEDIA_AUDIO_DIR = DATA_DIR / "media_audio"\nMEDIA_AUDIO_DIR.mkdir(parents=True, exist_ok=True)\n')
 
+tag_css = '.tagbox{margin:12px 0 16px;padding:12px;background:#101319;border:1px solid #2b2f3a;border-radius:14px}.tagbox strong{display:block;margin-bottom:8px}.tagbox .small{margin:8px 0;color:#aeb4c4}.tagbtn,.presetbtn{width:auto;margin:5px 6px 0 0;padding:8px 10px;border-radius:10px;border:1px solid #3a3f4c;background:#252a35;color:#f4f4f5;font-weight:700;cursor:pointer}.presetbtn{background:#f4f4f5;color:#111827}.tagbtn:hover,.presetbtn:hover{filter:brightness(1.08)}'
 if '.checkrow' not in s:
     s = s.replace('input{width:100%;', 'input,textarea,select{width:100%;')
-    s = s.replace('button[disabled]{opacity:.65;cursor:wait}</style>', 'button[disabled]{opacity:.65;cursor:wait}textarea{min-height:130px;resize:vertical}.checkrow{display:flex;align-items:flex-start;gap:10px;margin-top:18px}.checkrow input{width:auto;margin-top:4px}.checkrow label{margin:0;font-weight:700}audio{width:100%;margin:16px 0}.transcript{white-space:pre-wrap;background:#101319;border:1px solid #2b2f3a;border-radius:14px;padding:14px;color:#e5e7eb}</style>')
+    s = s.replace('button[disabled]{opacity:.65;cursor:wait}</style>', 'button[disabled]{opacity:.65;cursor:wait}textarea{min-height:130px;resize:vertical}.checkrow{display:flex;align-items:flex-start;gap:10px;margin-top:18px}.checkrow input{width:auto;margin-top:4px}.checkrow label{margin:0;font-weight:700}audio{width:100%;margin:16px 0}.transcript{white-space:pre-wrap;background:#101319;border:1px solid #2b2f3a;border-radius:14px;padding:14px;color:#e5e7eb}' + tag_css + '</style>')
+elif '.tagbox' not in s:
+    s = s.replace('</style>', tag_css + '</style>', 1)
 
 if 'download_media_audio' not in s:
     marker = '<form method="post" action="{{url_for(\'test_login\')}}"><button class="btn2">Testar login configurado</button></form>'
@@ -70,13 +81,21 @@ def download_media_audio():
 quality_hint = '<p class="small">Para melhor qualidade, use pelo menos 10 segundos de voz limpa. O ideal é 30-60 segundos, sem música, sem ruído e com apenas uma pessoa falando.</p>\n'
 reference_seconds_field = '<label>Duração da referência em segundos</label><input type="number" name="reference_seconds" value="30" min="10" max="60">\n' + quality_hint
 
+tag_controls = '''<div class="tagbox"><strong>Adicionar emoção/tom/pausa</strong>
+<div><button type="button" class="tagbtn" onclick="insertTag(this,'[calm]')">[calm]</button><button type="button" class="tagbtn" onclick="insertTag(this,'[excited]')">[excited]</button><button type="button" class="tagbtn" onclick="insertTag(this,'[whispering]')">[whispering]</button><button type="button" class="tagbtn" onclick="insertTag(this,'[flirty]')">[flirty]</button><button type="button" class="tagbtn" onclick="insertTag(this,'[laughing]')">[laughing]</button><button type="button" class="tagbtn" onclick="insertTag(this,'[giggle]')">[giggle]</button><button type="button" class="tagbtn" onclick="insertTag(this,'[sighing]')">[sighing]</button><button type="button" class="tagbtn" onclick="insertTag(this,'[singing]')">[singing]</button></div>
+<div><button type="button" class="tagbtn" onclick="insertTag(this,'[pause]')">[pause]</button><button type="button" class="tagbtn" onclick="insertTag(this,'[short pause]')">[short pause]</button><button type="button" class="tagbtn" onclick="insertTag(this,'[emphasis]')">[emphasis]</button><button type="button" class="tagbtn" onclick="insertTag(this,'[slow]')">[slow]</button><button type="button" class="tagbtn" onclick="insertTag(this,'[pitch up]')">[pitch up]</button><button type="button" class="tagbtn" onclick="insertTag(this,'[inhale]')">[inhale]</button><button type="button" class="tagbtn" onclick="insertTag(this,'[exhale]')">[exhale]</button><button type="button" class="tagbtn" onclick="insertTag(this,'[clears throat]')">[clears throat]</button><button type="button" class="tagbtn" onclick="insertTag(this,'[groaning]')">[groaning]</button></div>
+<div><button type="button" class="tagbtn" onclick="insertTag(this,'(break)')">(break)</button><button type="button" class="tagbtn" onclick="insertTag(this,'(long-break)')">(long-break)</button><button type="button" class="tagbtn" onclick="insertTag(this,'(breath)')">(breath)</button><button type="button" class="tagbtn" onclick="insertTag(this,'(laugh)')">(laugh)</button><button type="button" class="tagbtn" onclick="insertTag(this,'(cough)')">(cough)</button><button type="button" class="tagbtn" onclick="insertTag(this,'(lip-smacking)')">(lip-smacking)</button><button type="button" class="tagbtn" onclick="insertTag(this,'(sigh)')">(sigh)</button></div>
+<div><button type="button" class="presetbtn" onclick="insertTag(this,'[calm] [soft tone]')">Natural doce</button><button type="button" class="presetbtn" onclick="insertTag(this,'[calm] [whispering]')">Íntimo suave</button><button type="button" class="presetbtn" onclick="insertTag(this,'[flirty] [calm]')">Carinhoso</button><button type="button" class="presetbtn" onclick="insertTag(this,'[short pause]')">Pausa natural</button><button type="button" class="presetbtn" onclick="insertTag(this,'[inhale] [short pause]')">Mais humano</button><button type="button" class="presetbtn" onclick="insertTag(this,'[slow]')">Mais lento</button><button type="button" class="presetbtn" onclick="insertTag(this,'[emphasis]')">Ênfase</button><button type="button" class="tagbtn" onclick="clearTags(this)">Limpar tags</button></div>
+<p class="small">Use poucas tags. Tags demais podem deixar a voz instável ou artificial.</p></div>
+'''
+
 if 'make_ref_tts' not in s:
     marker = '<form method="post" action="{{url_for(\'test_login\')}}"><button class="btn2">Testar login configurado</button></form>'
     form = '''<form method="post" action="{{url_for('make_ref_tts')}}">
 <h2>Gerar áudio com minha voz</h2>
 <label>Link da mídia própria ou autorizada</label><input name="url" placeholder="Story, post, reels ou URL pública/autorizada de vídeo/mídia" required>
 <label>Texto novo para a voz falar</label><textarea name="text" placeholder="Digite aqui o texto que será falado..." required></textarea>
-''' + reference_seconds_field + '''<div class="checkrow"><input id="consent" type="checkbox" name="consent" value="yes" required><label for="consent">Confirmo que esta é minha voz ou tenho autorização para usá-la.</label></div>
+''' + tag_controls + reference_seconds_field + '''<div class="checkrow"><input id="consent" type="checkbox" name="consent" value="yes" required><label for="consent">Confirmo que esta é minha voz ou tenho autorização para usá-la.</label></div>
 <button>Gerar áudio com minha voz</button>
 </form>
 ''' + marker
@@ -103,7 +122,7 @@ if 'generate_fish_voice' not in s:
 <h2>Gerar com voz salva</h2>
 <label>Voz salva</label><select name="model_id" required>{% if saved_voices %}{% for voice in saved_voices %}<option value="{{voice.model_id}}">{{voice.name}} · {{voice.model_id}}</option>{% endfor %}{% else %}<option value="" disabled selected>Nenhuma voz salva</option>{% endif %}</select>
 <label>Texto que a voz deve falar</label><textarea name="text" placeholder="Digite aqui o texto que será falado..." required></textarea>
-<button>Gerar MP3</button>
+''' + tag_controls + '''<button>Gerar MP3</button>
 </form>
 '''
     s = s.replace(marker, saved_form + marker)
