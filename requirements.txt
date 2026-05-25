@@ -4,3 +4,4 @@ requests>=2.25
 msgpack>=1.0
 instaloader==4.15.1
 yt-dlp
+boto3>=1.34
