@@ -18,6 +18,18 @@ def ytdlp_cookie_args(workdir):
     return ["--cookies", str(cookies_path)]
 '''
 
+YTDLP_OLD_APP_INLINE = '["yt-dlp", "--no-playlist", "--max-filesize", "250M", "-x", "--audio-format", "mp3", "--audio-quality", "0", "-o", template, url]'
+YTDLP_JS_APP_INLINE = '["yt-dlp", "--js-runtimes", "node", "--no-playlist", "--max-filesize", "250M", "-x", "--audio-format", "mp3", "--audio-quality", "0", "-o", template, url]'
+YTDLP_COOKIE_JS_APP_INLINE = '["yt-dlp", *ytdlp_cookie_args(workdir), "--js-runtimes", "node", "--no-playlist", "--max-filesize", "250M", "-x", "--audio-format", "mp3", "--audio-quality", "0", "-o", template, url]'
+YTDLP_JS_REMOTE_APP_INLINE = '["yt-dlp", "--js-runtimes", "node", "--remote-components", "ejs:github", "--no-playlist", "--max-filesize", "250M", "-x", "--audio-format", "mp3", "--audio-quality", "0", "-o", template, url]'
+YTDLP_NEW_APP_INLINE = '["yt-dlp", *ytdlp_cookie_args(workdir), "--js-runtimes", "node", "--remote-components", "ejs:github", "--no-playlist", "--max-filesize", "250M", "-x", "--audio-format", "mp3", "--audio-quality", "0", "-o", template, url]'
+
+YTDLP_OLD_REF_INLINE = '["yt-dlp", "--no-playlist", "--max-filesize", "250M", "-o", output_template, url]'
+YTDLP_JS_REF_INLINE = '["yt-dlp", "--js-runtimes", "node", "--no-playlist", "--max-filesize", "250M", "-o", output_template, url]'
+YTDLP_COOKIE_JS_REF_INLINE = '["yt-dlp", *ytdlp_cookie_args(workdir), "--js-runtimes", "node", "--no-playlist", "--max-filesize", "250M", "-o", output_template, url]'
+YTDLP_JS_REMOTE_REF_INLINE = '["yt-dlp", "--js-runtimes", "node", "--remote-components", "ejs:github", "--no-playlist", "--max-filesize", "250M", "-o", output_template, url]'
+YTDLP_NEW_REF_INLINE = '["yt-dlp", *ytdlp_cookie_args(workdir), "--js-runtimes", "node", "--remote-components", "ejs:github", "--no-playlist", "--max-filesize", "250M", "-o", output_template, url]'
+
 APP_CMD_BLOCK = '''cmd = [
             "yt-dlp",
             *ytdlp_cookie_args(workdir),
@@ -32,30 +44,7 @@ APP_CMD_BLOCK = '''cmd = [
             url,
         ]'''
 
-REF_DOWNLOAD_BLOCK = '''    output_template = str(workdir / "generic_media.%(ext)s")
-    cookie_args = ytdlp_cookie_args(workdir)
-    command = [
-        "yt-dlp",
-        *cookie_args,
-        "--js-runtimes", "node",
-        "--remote-components", "ejs:github",
-        "--no-playlist",
-        "--max-filesize", "250M",
-        "-o", output_template,
-        url,
-    ]
-    try:
-        run_checked(command, "Falha ao baixar a mídia pública/autorizada")
-    except RuntimeError as exc:
-        detail = str(exc)
-        if "Sign in to confirm" in detail or "not a bot" in detail:
-            raise RuntimeError(youtube_cookie_error_message(bool(cookie_args))) from exc
-        raise
-    return pick_audio_source(workdir)
-'''
-
-OLD_COOKIE_MESSAGE = "O YouTube recusou os cookies configurados em YTDLP_COOKIES_B64. Exporte cookies novos do YouTube em formato Netscape, converta para Base64, atualize a variável na Railway e faça redeploy."
-NEW_COOKIE_MESSAGE = "O YouTube bloqueou o download mesmo com YTDLP_COOKIES_B64 configurado. Se o log mostrar YTDLP_COOKIES_B64 configured: True, os cookies chegaram ao container; o bloqueio pode ser IP da Railway, sessão vencida, cliente/player do YouTube ou cookies recusados. Tente outro link, aguarde, ou use uma mídia já baixada/autorizada."
+REF_CMD_INLINE = 'run_checked(["yt-dlp", *ytdlp_cookie_args(workdir), "--js-runtimes", "node", "--remote-components", "ejs:github", "--no-playlist", "--max-filesize", "250M", "-o", output_template, url], "Falha ao baixar a mídia pública/autorizada")'
 
 
 def add_cookie_helper(s):
@@ -69,19 +58,47 @@ def add_cookie_helper(s):
 
 
 def cleanup_duplicate_ytdlp_args(s):
-    replacements = {
-        '*ytdlp_cookie_args(workdir),\n            *ytdlp_cookie_args(workdir),': '*ytdlp_cookie_args(workdir),',
-        '*ytdlp_cookie_args(workdir), *ytdlp_cookie_args(workdir),': '*ytdlp_cookie_args(workdir),',
-        '"--remote-components", "ejs:github",\n            "--remote-components", "ejs:github",': '"--remote-components", "ejs:github",',
-        '"--remote-components", "ejs:github", "--remote-components", "ejs:github",': '"--remote-components", "ejs:github",',
-    }
-    for old, new in replacements.items():
-        s = s.replace(old, new)
+    s = s.replace(
+        '*ytdlp_cookie_args(workdir),\n            *ytdlp_cookie_args(workdir),',
+        '*ytdlp_cookie_args(workdir),'
+    )
+    s = s.replace(
+        '*ytdlp_cookie_args(workdir), *ytdlp_cookie_args(workdir),',
+        '*ytdlp_cookie_args(workdir),'
+    )
+    s = s.replace(
+        '"--remote-components", "ejs:github",\n            "--remote-components", "ejs:github",',
+        '"--remote-components", "ejs:github",'
+    )
+    s = s.replace(
+        '"--remote-components", "ejs:github", "--remote-components", "ejs:github",',
+        '"--remote-components", "ejs:github",'
+    )
     return s
 
 
 def patch_app_py(s):
     s = add_cookie_helper(s)
+    s = s.replace(YTDLP_OLD_APP_INLINE, YTDLP_NEW_APP_INLINE)
+    s = s.replace(YTDLP_JS_APP_INLINE, YTDLP_NEW_APP_INLINE)
+    s = s.replace(YTDLP_COOKIE_JS_APP_INLINE, YTDLP_NEW_APP_INLINE)
+    s = s.replace(YTDLP_JS_REMOTE_APP_INLINE, YTDLP_NEW_APP_INLINE)
+    s = s.replace(
+        'cmd = [\n            "yt-dlp",\n            "--no-playlist",',
+        'cmd = [\n            "yt-dlp",\n            *ytdlp_cookie_args(workdir),\n            "--js-runtimes", "node",\n            "--remote-components", "ejs:github",\n            "--no-playlist",'
+    )
+    s = s.replace(
+        'cmd = [\n            "yt-dlp",\n            "--js-runtimes", "node",\n            "--no-playlist",',
+        'cmd = [\n            "yt-dlp",\n            *ytdlp_cookie_args(workdir),\n            "--js-runtimes", "node",\n            "--remote-components", "ejs:github",\n            "--no-playlist",'
+    )
+    s = s.replace(
+        'cmd = [\n            "yt-dlp",\n            "--js-runtimes", "node",\n            "--remote-components", "ejs:github",\n            "--no-playlist",',
+        'cmd = [\n            "yt-dlp",\n            *ytdlp_cookie_args(workdir),\n            "--js-runtimes", "node",\n            "--remote-components", "ejs:github",\n            "--no-playlist",'
+    )
+    s = s.replace(
+        'cmd = [\n            "yt-dlp",\n            *ytdlp_cookie_args(workdir),\n            "--js-runtimes", "node",\n            "--no-playlist",',
+        'cmd = [\n            "yt-dlp",\n            *ytdlp_cookie_args(workdir),\n            "--js-runtimes", "node",\n            "--remote-components", "ejs:github",\n            "--no-playlist",'
+    )
     s = re.sub(
         r'cmd = \[\s*"yt-dlp",.*?"-o",\s*template,\s*url,\s*\]',
         APP_CMD_BLOCK,
@@ -99,10 +116,29 @@ def patch_app_py(s):
 
 def patch_reference_tts_py(s):
     s = add_cookie_helper(s)
-    s = s.replace(OLD_COOKIE_MESSAGE, NEW_COOKIE_MESSAGE)
+    s = s.replace(YTDLP_OLD_REF_INLINE, YTDLP_NEW_REF_INLINE)
+    s = s.replace(YTDLP_JS_REF_INLINE, YTDLP_NEW_REF_INLINE)
+    s = s.replace(YTDLP_COOKIE_JS_REF_INLINE, YTDLP_NEW_REF_INLINE)
+    s = s.replace(YTDLP_JS_REMOTE_REF_INLINE, YTDLP_NEW_REF_INLINE)
+    s = s.replace(
+        'run_checked(["yt-dlp", "--no-playlist", "--max-filesize", "250M", "-o", output_template, url], "Falha ao baixar a mídia pública/autorizada")',
+        REF_CMD_INLINE
+    )
+    s = s.replace(
+        'run_checked(["yt-dlp", "--js-runtimes", "node", "--no-playlist", "--max-filesize", "250M", "-o", output_template, url], "Falha ao baixar a mídia pública/autorizada")',
+        REF_CMD_INLINE
+    )
+    s = s.replace(
+        'run_checked(["yt-dlp", *ytdlp_cookie_args(workdir), "--js-runtimes", "node", "--no-playlist", "--max-filesize", "250M", "-o", output_template, url], "Falha ao baixar a mídia pública/autorizada")',
+        REF_CMD_INLINE
+    )
+    s = s.replace(
+        'run_checked(["yt-dlp", "--js-runtimes", "node", "--remote-components", "ejs:github", "--no-playlist", "--max-filesize", "250M", "-o", output_template, url], "Falha ao baixar a mídia pública/autorizada")',
+        REF_CMD_INLINE
+    )
     s = re.sub(
-        r'    output_template = str\(workdir / "generic_media\.%\(ext\)s"\)\n.*?    return pick_audio_source\(workdir\)\n',
-        REF_DOWNLOAD_BLOCK,
+        r'run_checked\(\["yt-dlp".*?output_template, url\],\s*"Falha ao baixar a mídia pública/autorizada"\)',
+        REF_CMD_INLINE,
         s,
         count=1,
         flags=re.S,
@@ -111,37 +147,12 @@ def patch_reference_tts_py(s):
     return s
 
 
-def command_block(s, start_marker):
-    start = s.find(start_marker)
-    if start < 0:
-        return ""
-    end = s.find("\n    return pick_audio_source(workdir)", start)
-    if end < 0:
-        end = s.find("\n        ]", start)
-    return s[start:end] if end > start else s[start:start + 900]
-
-
-def has_required_app_ytdlp_args(s):
-    block = command_block(s, 'cmd = [')
-    return all(item in block for item in [
-        "ytdlp_cookie_args(workdir)",
-        '"--js-runtimes", "node"',
-        '"--remote-components", "ejs:github"',
-        '"-x"',
-        '"--audio-format", "mp3"',
-    ])
-
-
-def has_required_reference_ytdlp_args(s):
-    block = command_block(s, 'output_template = str(workdir / "generic_media.%(ext)s")')
-    return all(item in block for item in [
-        "cookie_args = ytdlp_cookie_args(workdir)",
-        "*cookie_args",
-        '"--js-runtimes", "node"',
-        '"--remote-components", "ejs:github"',
-        '"-o", output_template',
-        'run_checked(command, "Falha ao baixar a mídia pública/autorizada")',
-    ])
+def has_required_ytdlp_args(s):
+    return (
+        "ytdlp_cookie_args(workdir)" in s
+        and '"--js-runtimes", "node"' in s
+        and '"--remote-components", "ejs:github"' in s
+    )
 
 
 print("YTDLP_COOKIES_B64 configured:", bool((os.getenv("YTDLP_COOKIES_B64") or "").strip()))
@@ -162,7 +173,5 @@ for filename in ["app.py", "reference_tts.py"]:
         path.write_text(s, encoding="utf-8")
         print(f"Patched yt-dlp command in {filename}")
 
-    if filename == "app.py" and not has_required_app_ytdlp_args(s):
-        raise RuntimeError("Failed to patch yt-dlp cookies/node/EJS args in app.py")
-    if filename == "reference_tts.py" and not has_required_reference_ytdlp_args(s):
-        raise RuntimeError("Failed to patch yt-dlp cookies/node/EJS args in reference_tts.py")
+    if not has_required_ytdlp_args(s):
+        raise RuntimeError(f"Failed to patch yt-dlp cookies/node/EJS args in {filename}")
