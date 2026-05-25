@@ -13,4 +13,4 @@ RUN node --version || true
 RUN yt-dlp --version || true
 COPY . .
 
-CMD python patch_loading.py && gunicorn app:app --bind 0.0.0.0:${PORT} --workers 1 --threads 4 --timeout 300
+CMD python patch_loading.py && python fix_media_ytdlp.py && gunicorn app:app --bind 0.0.0.0:${PORT} --workers 1 --threads 4 --timeout 300
