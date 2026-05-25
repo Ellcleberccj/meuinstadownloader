@@ -111,7 +111,7 @@ def patch_reference_tts(text):
         )
 
     text = re.sub(
-        r'    output_template = str\(workdir / "generic_media\.%(ext\)s"\)\n'
+        r'    output_template = str\(workdir / "generic_media\.%\(ext\)s"\)\n'
         r'    cookie_args = ytdlp_cookie_args\(workdir\)\n'
         r'    command = \[\n.*?\n'
         r'    return pick_audio_source\(workdir\)\n',
@@ -131,13 +131,15 @@ if path.exists():
         path.write_text(after, encoding="utf-8")
         print("Patched reference_tts.py YouTube yt-dlp fallback")
 
+    final_text = path.read_text(encoding="utf-8")
     required = [
         '"--js-runtimes", "node"',
         '"--remote-components", "ejs:github"',
         '"-f", "ba/bestaudio/best"',
         '"--extractor-args"',
         "run_ytdlp_reference_download",
+        "return run_ytdlp_reference_download(cookie_args, output_template, url, workdir, is_youtube)",
     ]
-    missing = [item for item in required if item not in path.read_text(encoding="utf-8")]
+    missing = [item for item in required if item not in final_text]
     if missing:
         raise RuntimeError("Failed to patch YouTube yt-dlp fallback in reference_tts.py: " + ", ".join(missing))
