@@ -106,6 +106,26 @@ def env_int(name, default):
         return default
 
 
+def ytdlp_cookie_args(workdir):
+    cookies_b64 = env_text("YTDLP_COOKIES_B64", "")
+    if not cookies_b64:
+        return []
+    cookies_path = Path(workdir) / "yt_dlp_cookies.txt"
+    try:
+        cookies_path.write_bytes(base64.b64decode(cookies_b64))
+    except Exception as exc:
+        raise RuntimeError("YTDLP_COOKIES_B64 inválida. Exporte cookies do YouTube em formato Netscape e converta para Base64.") from exc
+    if not cookies_path.exists() or cookies_path.stat().st_size == 0:
+        raise RuntimeError("YTDLP_COOKIES_B64 gerou um arquivo vazio. Exporte os cookies novamente em formato Netscape.")
+    return ["--cookies", str(cookies_path)]
+
+
+def youtube_cookie_error_message(has_cookies):
+    if has_cookies:
+        return "O YouTube recusou os cookies configurados em YTDLP_COOKIES_B64. Exporte cookies novos do YouTube em formato Netscape, converta para Base64, atualize a variável na Railway e faça redeploy."
+    return "O YouTube pediu login/bot e YTDLP_COOKIES_B64 não está configurada no container. Configure cookies do YouTube em formato Netscape convertido para Base64 na Railway e faça redeploy."
+
+
 def clamp_reference_seconds(seconds):
     return max(10, min(60, seconds))
 
@@ -167,7 +187,24 @@ def download_reference_media(url, workdir):
         return pick_audio_source(workdir)
 
     output_template = str(workdir / "generic_media.%(ext)s")
-    run_checked(["yt-dlp", "--no-playlist", "--max-filesize", "250M", "-o", output_template, url], "Falha ao baixar a mídia pública/autorizada")
+    cookie_args = ytdlp_cookie_args(workdir)
+    command = [
+        "yt-dlp",
+        *cookie_args,
+        "--js-runtimes", "node",
+        "--remote-components", "ejs:github",
+        "--no-playlist",
+        "--max-filesize", "250M",
+        "-o", output_template,
+        url,
+    ]
+    try:
+        run_checked(command, "Falha ao baixar a mídia pública/autorizada")
+    except RuntimeError as exc:
+        detail = str(exc)
+        if "Sign in to confirm" in detail or "not a bot" in detail:
+            raise RuntimeError(youtube_cookie_error_message(bool(cookie_args))) from exc
+        raise
     return pick_audio_source(workdir)
 
 
