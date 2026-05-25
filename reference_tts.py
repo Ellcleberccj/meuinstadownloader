@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import re
@@ -27,12 +28,18 @@ parse_post_shortcode = None
 
 RESULT_HTML = """
 <!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Áudio gerado</title>
-<style>:root{color-scheme:dark}body{margin:0;font-family:Inter,system-ui,Arial;background:#0f1115;color:#f4f4f5}main{max-width:1050px;margin:auto;padding:42px 20px}.card{background:#171a21;border:1px solid #2b2f3a;border-radius:22px;padding:28px}h1{margin:0 0 10px;font-size:32px}p{color:#c7cbda;line-height:1.55}.btn{display:inline-block;text-align:center;text-decoration:none;margin-top:14px;padding:13px 16px;border:0;border-radius:14px;background:#f4f4f5;color:#111827;font-weight:800;font-size:15px}.btn2{background:#252a35;color:#f4f4f5;border:1px solid #3a3f4c}.actions{display:flex;gap:10px;flex-wrap:wrap}.transcript{white-space:pre-wrap;background:#101319;border:1px solid #2b2f3a;border-radius:14px;padding:14px;color:#e5e7eb}audio{width:100%;margin:16px 0}</style></head>
-<body><main><div class="card"><h1>Áudio gerado</h1><p>Preview do MP3 criado pelo app.</p>
-<audio controls preload="auto" src="{{audio_url}}"></audio>
-<div class="actions"><a class="btn" href="{{file_url}}" target="_blank" rel="noopener">Abrir MP3</a><a class="btn btn2" href="{{file_url}}" download="{{filename}}">Baixar MP3</a><a class="btn btn2" href="{{url_for('index')}}">Voltar</a></div>
+<style>:root{color-scheme:dark}body{margin:0;font-family:Inter,system-ui,Arial;background:#0f1115;color:#f4f4f5}main{max-width:1050px;margin:auto;padding:42px 20px}.card{background:#171a21;border:1px solid #2b2f3a;border-radius:22px;padding:28px}h1{margin:0 0 10px;font-size:32px}p{color:#c7cbda;line-height:1.55}.playerBox{margin:22px 0;padding:16px;background:#101319;border:1px solid #2b2f3a;border-radius:18px}.status{font-size:14px;color:#aeb4c4;margin-top:8px}.btn,button.btn{display:inline-block;text-align:center;text-decoration:none;margin-top:14px;padding:13px 16px;border:0;border-radius:14px;background:#f4f4f5;color:#111827;font-weight:800;font-size:15px;cursor:pointer}.btn2{background:#252a35;color:#f4f4f5;border:1px solid #3a3f4c}.actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.actions form{margin:0}.transcript{white-space:pre-wrap;background:#101319;border:1px solid #2b2f3a;border-radius:14px;padding:14px;color:#e5e7eb}audio{width:100%;display:block}button[disabled]{opacity:.65;cursor:wait}.spin{display:inline-block;width:15px;height:15px;border:2px solid #596273;border-top-color:white;border-radius:50%;animation:s .8s linear infinite;margin-right:8px;vertical-align:-2px}@keyframes s{to{transform:rotate(360deg)}}@media(max-width:640px){main{padding:24px 14px}.card{padding:20px}.actions{display:block}.btn,button.btn{width:100%;box-sizing:border-box}}</style></head>
+<body><main><div class="card"><h1>Áudio gerado</h1><p>O MP3 está carregado nesta página. Você pode ouvir, baixar ou regenerar sem abrir uma rota de arquivo separada.</p>
+<div class="playerBox"><audio id="generatedAudio" controls preload="auto" src="data:audio/mpeg;base64,{{audio_b64}}"></audio><div id="audioStatus" class="status">Carregando preview...</div></div>
+<div class="actions">
+<a class="btn btn2" href="data:audio/mpeg;base64,{{audio_b64}}" download="{{filename}}">Baixar MP3</a>
+{% if regenerate %}<form method="post" action="{{regenerate.action_url}}">{% for name, value in regenerate.fields.items() %}<input type="hidden" name="{{name}}" value="{{value}}">{% endfor %}<button class="btn" type="submit">Regenerar</button></form>{% endif %}
+<a class="btn btn2" href="{{url_for('index')}}">Voltar</a>
+</div>
 {% if reference_text %}<h2>Transcrição automática usada como referência</h2><div class="transcript">{{reference_text}}</div>{% endif %}
-</div></main></body></html>
+</div></main><script>
+document.addEventListener('DOMContentLoaded',()=>{const audio=document.getElementById('generatedAudio');const status=document.getElementById('audioStatus');function fmt(s){if(!Number.isFinite(s)||s<=0)return'';const m=Math.floor(s/60);const r=Math.round(s%60).toString().padStart(2,'0');return m+':'+r}audio.addEventListener('loadedmetadata',()=>{const d=fmt(audio.duration);status.textContent=d?'Preview pronto. Duração: '+d:'Preview pronto.'});audio.addEventListener('canplay',()=>{if(status.textContent==='Carregando preview...')status.textContent='Preview pronto.'});audio.addEventListener('error',()=>{status.textContent='Não foi possível carregar o preview neste navegador. Tente regenerar o áudio.'});document.querySelectorAll('form').forEach(form=>form.addEventListener('submit',()=>{const b=form.querySelector('button');if(b){b.disabled=true;b.innerHTML='<span class="spin"></span>Regenerando...'}}));audio.load()});
+</script></body></html>
 """
 
 
@@ -76,7 +83,7 @@ def fish_error_detail(response):
 
 
 def env_text(name, default):
-    value = (os.getenv(name) or "").strip().strip('"').strip("'")
+    value = (os.getenv(name or "") or "").strip().strip('"').strip("'")
     return value or default
 
 
@@ -383,15 +390,20 @@ def save_output_mp3(output_bytes):
     return filename
 
 
-def render_audio_result(filename, reference_text=""):
-    file_url = url_for("media_file", filename=filename)
+def mp3_base64_for_result(filename):
+    path = ref_tts_path(filename)
+    if path is None:
+        raise RuntimeError("O MP3 gerado não foi encontrado para montar o preview.")
+    return base64.b64encode(path.read_bytes()).decode("ascii")
+
+
+def render_audio_result(filename, reference_text="", regenerate=None):
     return render_template_string(
         RESULT_HTML,
-        file_url=file_url,
-        audio_url=file_url,
-        download_url=file_url,
+        audio_b64=mp3_base64_for_result(filename),
         filename=filename,
         reference_text=reference_text,
+        regenerate=regenerate,
     )
 
 
@@ -417,7 +429,16 @@ def make_ref_tts():
         output_bytes = fish_tts_with_reference(target_text, reference_audio, reference_text)
         output_bytes = normalize_output_mp3(output_bytes)
         filename = save_output_mp3(output_bytes)
-        return render_audio_result(filename, reference_text)
+        regenerate = {
+            "action_url": url_for("make_ref_tts"),
+            "fields": {
+                "url": media_url,
+                "text": target_text,
+                "reference_seconds": str(reference_seconds),
+                "consent": "yes",
+            },
+        }
+        return render_audio_result(filename, reference_text, regenerate)
     except Exception as exc:
         flash(f"Erro ao gerar áudio com referência: {type(exc).__name__}: {exc}", "error")
         return redirect(url_for("index"))
@@ -470,7 +491,14 @@ def generate_fish_voice():
         output_bytes = fish_tts_with_saved_voice(target_text, model_id)
         output_bytes = normalize_output_mp3(output_bytes)
         filename = save_output_mp3(output_bytes)
-        return render_audio_result(filename)
+        regenerate = {
+            "action_url": url_for("generate_fish_voice"),
+            "fields": {
+                "model_id": model_id,
+                "text": target_text,
+            },
+        }
+        return render_audio_result(filename, "", regenerate)
     except Exception as exc:
         flash(f"Erro ao gerar áudio com voz salva: {type(exc).__name__}: {exc}", "error")
         return redirect(url_for("index"))
