@@ -126,6 +126,48 @@ def youtube_cookie_error_message(has_cookies):
     return "O YouTube pediu login/bot e YTDLP_COOKIES_B64 não está configurada no container. Configure cookies do YouTube em formato Netscape convertido para Base64 na Railway e faça redeploy."
 
 
+def is_youtube_host(host):
+    return host in {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"} or host.endswith(".youtube.com")
+
+
+def ytdlp_youtube_extractor_args():
+    player_client = env_text("YTDLP_YOUTUBE_PLAYER_CLIENT", "mweb,web_safari,android_vr")
+    parts = [f"player_client={player_client}", env_text("YTDLP_YOUTUBE_EXTRA_ARGS", "fetch_pot=auto")]
+    po_token = env_text("YTDLP_YOUTUBE_PO_TOKEN", env_text("YTDLP_PO_TOKEN", ""))
+    if po_token:
+        parts.append(f"po_token={po_token}")
+    visitor_data = env_text("YTDLP_YOUTUBE_VISITOR_DATA", "")
+    if visitor_data:
+        parts.extend(["player_skip=webpage,configs", f"visitor_data={visitor_data}"])
+    return ["--extractor-args", "youtube:" + ";".join(part for part in parts if part)]
+
+
+def ytdlp_extra_network_args():
+    args = []
+    user_agent = env_text("YTDLP_USER_AGENT", "")
+    if user_agent:
+        args.extend(["--user-agent", user_agent])
+    proxy = env_text("YTDLP_PROXY", "")
+    if proxy:
+        args.extend(["--proxy", proxy])
+    return args
+
+
+def ytdlp_command(output_template, url, cookie_args=None, youtube_args=None):
+    return [
+        "yt-dlp",
+        *(cookie_args or []),
+        *ytdlp_extra_network_args(),
+        "--js-runtimes", "node",
+        "--remote-components", "ejs:github",
+        *(youtube_args or []),
+        "--no-playlist",
+        "--max-filesize", "250M",
+        "-o", output_template,
+        url,
+    ]
+
+
 def clamp_reference_seconds(seconds):
     return max(10, min(60, seconds))
 
@@ -185,6 +227,25 @@ def download_reference_media(url, workdir):
             post = Post.from_shortcode(loader.context, shortcode)
             loader.download_post(post, target=f"reference_post_{shortcode}")
         return pick_audio_source(workdir)
+
+    if is_youtube_host(host):
+        output_template = str(workdir / "generic_media.%(ext)s")
+        cookie_args = ytdlp_cookie_args(workdir)
+        youtube_args = ytdlp_youtube_extractor_args()
+        attempts = [("modo publico sem cookies", ytdlp_command(output_template, url, youtube_args=youtube_args), False)]
+        if cookie_args:
+            attempts.append(("modo autenticado com cookies", ytdlp_command(output_template, url, cookie_args=cookie_args, youtube_args=youtube_args), True))
+        errors = []
+        for label, command, used_cookies in attempts:
+            try:
+                run_checked(command, "Falha ao baixar a midia publica/autorizada")
+                return pick_audio_source(workdir)
+            except RuntimeError as exc:
+                errors.append(f"{label}: {exc}")
+                detail = str(exc)
+                if "Sign in to confirm" not in detail and "not a bot" not in detail:
+                    raise
+        raise RuntimeError(youtube_cookie_error_message(any(used for _, _, used in attempts)) + " Tentativas: " + " | ".join(errors))
 
     output_template = str(workdir / "generic_media.%(ext)s")
     cookie_args = ytdlp_cookie_args(workdir)
