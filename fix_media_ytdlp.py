@@ -143,13 +143,6 @@ def patch_reference_tts_py(s):
         count=1,
         flags=re.S,
     )
-    s = re.sub(
-        r'    output_template = str\(workdir / "generic_media\.%\(ext\)s"\)\n    cookie_args = ytdlp_cookie_args\(workdir\)\n    command = \[\n.*?    return pick_audio_source\(workdir\)\n',
-        '    output_template = str(workdir / "generic_media.%(ext)s")\n    ' + REF_CMD_INLINE + '\n    return pick_audio_source(workdir)\n',
-        s,
-        count=1,
-        flags=re.S,
-    )
     s = cleanup_duplicate_ytdlp_args(s)
     return s
 
