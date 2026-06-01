@@ -106,249 +106,24 @@ def env_int(name, default):
         return default
 
 
-def env_bool(name, default=False):
-    value = env_text(name, "")
-    if not value:
-        return default
-    return value.lower() not in {"0", "false", "no", "off"}
-
-
-def normalize_netscape_cookie_text(cookie_text):
-    lines = []
-    valid_rows = 0
-    for raw_line in cookie_text.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        if line.startswith("#") and not line.startswith("#HttpOnly_"):
-            lines.append(line)
-            continue
-        parts = line.split("\t")
-        if len(parts) < 7:
-            parts = re.split(r"\s+", line, maxsplit=6)
-        if len(parts) >= 7:
-            lines.append("\t".join(parts[:7]))
-            valid_rows += 1
-    if valid_rows and not any("Netscape HTTP Cookie File" in line for line in lines):
-        lines.insert(0, "# Netscape HTTP Cookie File")
-    return "\n".join(lines) + ("\n" if lines else "")
-
-
-def decode_ytdlp_cookies_text():
+def ytdlp_cookie_args(workdir):
     cookies_b64 = env_text("YTDLP_COOKIES_B64", "")
     if not cookies_b64:
-        return ""
+        return []
+    cookies_path = Path(workdir) / "yt_dlp_cookies.txt"
     try:
-        return base64.b64decode(cookies_b64).decode("utf-8", errors="ignore")
+        cookies_path.write_bytes(base64.b64decode(cookies_b64))
     except Exception as exc:
         raise RuntimeError("YTDLP_COOKIES_B64 inválida. Exporte cookies do YouTube em formato Netscape e converta para Base64.") from exc
-
-
-def ytdlp_cookie_file(workdir):
-    cookie_text = decode_ytdlp_cookies_text()
-    if not cookie_text:
-        return None
-    cookies_path = Path(workdir) / "yt_dlp_cookies.txt"
-    cookies_path.write_text(normalize_netscape_cookie_text(cookie_text), encoding="utf-8")
     if not cookies_path.exists() or cookies_path.stat().st_size == 0:
         raise RuntimeError("YTDLP_COOKIES_B64 gerou um arquivo vazio. Exporte os cookies novamente em formato Netscape.")
-    return cookies_path
-
-
-def ytdlp_cookie_args(workdir):
-    cookies_path = ytdlp_cookie_file(workdir)
-    if not cookies_path:
-        return []
     return ["--cookies", str(cookies_path)]
-
-
-def youtube_visitor_data_from_cookies(cookies_path):
-    if not cookies_path:
-        return ""
-    try:
-        for line in Path(cookies_path).read_text(encoding="utf-8", errors="ignore").splitlines():
-            if not line:
-                continue
-            if line.startswith("#HttpOnly_"):
-                line = line[len("#HttpOnly_"):]
-            elif line.startswith("#"):
-                continue
-            parts = line.split("\t")
-            if len(parts) >= 7 and parts[5] == "VISITOR_INFO1_LIVE" and parts[6].strip():
-                return parts[6].strip()
-    except Exception:
-        return ""
-    return ""
-
-
-def youtube_cookie_diagnostics():
-    cookies_b64 = env_text("YTDLP_COOKIES_B64", "")
-    info = {
-        "configured": bool(cookies_b64),
-        "base64_valid": False,
-        "netscape_format": False,
-        "total_cookie_rows": 0,
-        "youtube_or_google_cookie_rows": 0,
-        "visitor_info_live": False,
-        "auth_cookie_names_present": [],
-        "expired_cookie_rows": 0,
-        "expired_auth_cookie_names": [],
-        "diagnosis": "YTDLP_COOKIES_B64 nao configurado.",
-    }
-    if not cookies_b64:
-        return info
-
-    try:
-        cookie_text = decode_ytdlp_cookies_text()
-        normalized_cookie_text = normalize_netscape_cookie_text(cookie_text)
-        info["base64_valid"] = True
-    except Exception:
-        info["diagnosis"] = "YTDLP_COOKIES_B64 nao e Base64 valido."
-        return info
-
-    rows = []
-    now_ts = int(time.time())
-    auth_names = {
-        "LOGIN_INFO",
-        "SID",
-        "HSID",
-        "SSID",
-        "APISID",
-        "SAPISID",
-        "__Secure-1PSID",
-        "__Secure-3PSID",
-        "__Secure-1PSIDTS",
-        "__Secure-3PSIDTS",
-    }
-    present_auth = set()
-    expired_auth = set()
-    for line in normalized_cookie_text.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if stripped.startswith("#HttpOnly_"):
-            stripped = stripped[len("#HttpOnly_"):]
-        elif stripped.startswith("#"):
-            if "Netscape" in stripped or "HTTP Cookie File" in stripped:
-                info["netscape_format"] = True
-            continue
-        parts = stripped.split("\t")
-        if len(parts) < 7:
-            continue
-        rows.append(parts)
-        domain, expires, name = parts[0].lower(), parts[4], parts[5]
-        is_youtube_cookie = "youtube.com" in domain or "google.com" in domain
-        if not is_youtube_cookie:
-            continue
-        info["youtube_or_google_cookie_rows"] += 1
-        if name == "VISITOR_INFO1_LIVE" and parts[6].strip():
-            info["visitor_info_live"] = True
-        if name in auth_names:
-            present_auth.add(name)
-        try:
-            expires_ts = int(expires)
-        except ValueError:
-            expires_ts = 0
-        if expires_ts and expires_ts < now_ts:
-            info["expired_cookie_rows"] += 1
-            if name in auth_names:
-                expired_auth.add(name)
-
-    info["total_cookie_rows"] = len(rows)
-    info["auth_cookie_names_present"] = sorted(present_auth)
-    info["expired_auth_cookie_names"] = sorted(expired_auth)
-
-    if not info["netscape_format"] or not rows:
-        info["diagnosis"] = "Base64 abre, mas nao parece cookies.txt Netscape valido."
-    elif not info["youtube_or_google_cookie_rows"]:
-        info["diagnosis"] = "O arquivo nao contem cookies de youtube.com/google.com."
-    elif not info["visitor_info_live"]:
-        info["diagnosis"] = "Cookies parecem incompletos para YouTube: falta VISITOR_INFO1_LIVE. Reexporte em janela anonima no YouTube."
-    elif present_auth and present_auth == expired_auth:
-        info["diagnosis"] = "Cookies de autenticacao do YouTube parecem expirados."
-    elif not present_auth:
-        info["diagnosis"] = "Tem cookies do YouTube, mas nao achei cookies de login. Pode ser export anonimo/incompleto."
-    else:
-        info["diagnosis"] = "Cookies parecem estruturalmente validos; se o yt-dlp ainda recebe bot-check, a suspeita principal vira IP/proxy da Railway."
-    return info
 
 
 def youtube_cookie_error_message(has_cookies):
     if has_cookies:
-        return "O YouTube recusou todas as tentativas do yt-dlp mesmo com cookies, PO Token, mweb e fingerprint de navegador. Isso normalmente indica bloqueio do IP da Railway; configure YTDLP_PROXY com um proxy residencial/ISP ou gere cookies novos em janela anonima."
-    return "O YouTube pediu login/bot. O app tentou yt-dlp com PO Token automatico; se persistir na Railway, configure YTDLP_COOKIES_B64 e/ou YTDLP_PROXY."
-
-
-def is_youtube_host(host):
-    return host in {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"} or host.endswith(".youtube.com")
-
-
-def ytdlp_youtube_extractor_args(visitor_data="", skip_webpage=False, player_client=None):
-    player_client = env_text("YTDLP_YOUTUBE_PLAYER_CLIENT", player_client or "mweb")
-    parts = [f"player_client={player_client}", env_text("YTDLP_YOUTUBE_EXTRA_ARGS", "fetch_pot=always")]
-    po_token = env_text("YTDLP_YOUTUBE_PO_TOKEN", env_text("YTDLP_PO_TOKEN", ""))
-    if po_token:
-        parts.append(f"po_token={po_token}")
-    visitor_data = env_text("YTDLP_YOUTUBE_VISITOR_DATA", visitor_data)
-    if skip_webpage:
-        parts.append("player_skip=webpage,configs")
-    if visitor_data:
-        parts.append(f"visitor_data={visitor_data}")
-    args = []
-    if skip_webpage:
-        args.extend(["--extractor-args", "youtubetab:skip=webpage"])
-    args.extend(["--extractor-args", "youtube:" + ";".join(part for part in parts if part)])
-    return args
-
-
-def ytdlp_pot_provider_args():
-    server_home = env_text("YTDLP_BGUTIL_SERVER_HOME", "")
-    candidates = [server_home] if server_home else [
-        str(Path.home() / "bgutil-ytdlp-pot-provider" / "server"),
-        "/root/bgutil-ytdlp-pot-provider/server",
-    ]
-    for candidate in candidates:
-        if candidate and Path(candidate).exists():
-            return ["--extractor-args", f"youtubepot-bgutilscript:server_home={candidate}"]
-    if server_home:
-        return ["--extractor-args", f"youtubepot-bgutilscript:server_home={server_home}"]
-    return []
-
-
-def ytdlp_extra_network_args():
-    args = []
-    user_agent = env_text("YTDLP_USER_AGENT", "")
-    if user_agent:
-        args.extend(["--user-agent", user_agent])
-    impersonate = env_text("YTDLP_IMPERSONATE", "chrome")
-    if impersonate:
-        args.extend(["--impersonate", impersonate])
-    if env_bool("YTDLP_FORCE_IPV4", True):
-        args.append("--force-ipv4")
-    proxy = env_text("YTDLP_PROXY", "")
-    if proxy:
-        args.extend(["--proxy", proxy])
-    return args
-
-
-def ytdlp_command(output_template, url, cookie_args=None, youtube_args=None):
-    return [
-        "yt-dlp",
-        *(cookie_args or []),
-        *ytdlp_extra_network_args(),
-        "--js-runtimes", "node",
-        "--remote-components", "ejs:github",
-        *ytdlp_pot_provider_args(),
-        *(youtube_args or []),
-        "--sleep-requests", env_text("YTDLP_SLEEP_REQUESTS", "2"),
-        "--extractor-retries", env_text("YTDLP_EXTRACTOR_RETRIES", "3"),
-        "--retries", env_text("YTDLP_RETRIES", "3"),
-        "--no-playlist",
-        "--max-filesize", "250M",
-        "-f", env_text("YTDLP_FORMAT", "bestaudio/best"),
-        "-o", output_template,
-        url,
-    ]
+        return "O YouTube recusou os cookies configurados em YTDLP_COOKIES_B64. Exporte cookies novos do YouTube em formato Netscape, converta para Base64, atualize a variável na Railway e faça redeploy."
+    return "O YouTube pediu login/bot e YTDLP_COOKIES_B64 não está configurada no container. Configure cookies do YouTube em formato Netscape convertido para Base64 na Railway e faça redeploy."
 
 
 def clamp_reference_seconds(seconds):
@@ -410,36 +185,6 @@ def download_reference_media(url, workdir):
             post = Post.from_shortcode(loader.context, shortcode)
             loader.download_post(post, target=f"reference_post_{shortcode}")
         return pick_audio_source(workdir)
-
-    if is_youtube_host(host):
-        output_template = str(workdir / "generic_media.%(ext)s")
-        cookies_path = ytdlp_cookie_file(workdir)
-        cookie_args = ["--cookies", str(cookies_path)] if cookies_path else []
-        visitor_data = youtube_visitor_data_from_cookies(cookies_path)
-        attempts = []
-        if cookie_args and visitor_data:
-            youtube_args = ytdlp_youtube_extractor_args(visitor_data=visitor_data, skip_webpage=True)
-            attempts.append(("modo autenticado com cookies + visitor_data sem webpage", ytdlp_command(output_template, url, cookie_args=cookie_args, youtube_args=youtube_args), True))
-        youtube_args = ytdlp_youtube_extractor_args()
-        attempts.append(("modo publico sem cookies + PO Token", ytdlp_command(output_template, url, youtube_args=youtube_args), False))
-        if cookie_args:
-            youtube_args = ytdlp_youtube_extractor_args(visitor_data=visitor_data)
-            attempts.append(("modo autenticado com cookies + PO Token", ytdlp_command(output_template, url, cookie_args=cookie_args, youtube_args=youtube_args), True))
-        fallback_clients = env_text("YTDLP_YOUTUBE_FALLBACK_CLIENTS", "web_embedded,android_vr")
-        if fallback_clients:
-            youtube_args = ytdlp_youtube_extractor_args(player_client=fallback_clients)
-            attempts.append((f"modo fallback clientes {fallback_clients}", ytdlp_command(output_template, url, youtube_args=youtube_args), False))
-        errors = []
-        for label, command, used_cookies in attempts:
-            try:
-                run_checked(command, "Falha ao baixar a midia publica/autorizada")
-                return pick_audio_source(workdir)
-            except RuntimeError as exc:
-                errors.append(f"{label}: {exc}")
-                detail = str(exc)
-                if "Sign in to confirm" not in detail and "not a bot" not in detail:
-                    raise
-        raise RuntimeError(youtube_cookie_error_message(any(used for _, _, used in attempts)) + " Tentativas: " + " | ".join(errors))
 
     output_template = str(workdir / "generic_media.%(ext)s")
     cookie_args = ytdlp_cookie_args(workdir)

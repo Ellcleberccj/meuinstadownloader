@@ -155,8 +155,7 @@ def health():
 @app.get("/debug-env")
 @auth_required
 def debug_env():
-    import reference_tts
-    return {"IG_USERNAME_configurado": bool(os.getenv("IG_USERNAME")), "IG_USERNAME_normalizado": (clean("IG_USERNAME").removeprefix("@").strip()[:2] + "***") if os.getenv("IG_USERNAME") else None, "IG_PASSWORD_configurado": bool(os.getenv("IG_PASSWORD")), "IG_PASSWORD_tamanho": len(clean("IG_PASSWORD")) if os.getenv("IG_PASSWORD") else 0, "IG_SESSION_B64_configurado": bool(os.getenv("IG_SESSION_B64")), "IG_COOKIES_JSON_configurado": bool(os.getenv("IG_COOKIES_JSON")), "YTDLP_COOKIES_B64_configurado": bool(os.getenv("YTDLP_COOKIES_B64")), "YTDLP_PROXY_configurado": bool(os.getenv("YTDLP_PROXY")), "youtube_cookie_diagnostico": reference_tts.youtube_cookie_diagnostics(), "DATA_DIR": str(DATA_DIR), "SESSION_DIR_existe": SESSION_DIR.exists(), "ultimo_teste_login": LAST_LOGIN_STATUS}
+    return {"IG_USERNAME_configurado": bool(os.getenv("IG_USERNAME")), "IG_USERNAME_normalizado": (clean("IG_USERNAME").removeprefix("@").strip()[:2] + "***") if os.getenv("IG_USERNAME") else None, "IG_PASSWORD_configurado": bool(os.getenv("IG_PASSWORD")), "IG_PASSWORD_tamanho": len(clean("IG_PASSWORD")) if os.getenv("IG_PASSWORD") else 0, "IG_SESSION_B64_configurado": bool(os.getenv("IG_SESSION_B64")), "IG_COOKIES_JSON_configurado": bool(os.getenv("IG_COOKIES_JSON")), "DATA_DIR": str(DATA_DIR), "SESSION_DIR_existe": SESSION_DIR.exists(), "ultimo_teste_login": LAST_LOGIN_STATUS}
 
 @app.post("/test-login")
 @auth_required
