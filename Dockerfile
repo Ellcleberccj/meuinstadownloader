@@ -13,4 +13,5 @@ RUN node --version || true
 RUN yt-dlp --version || true
 COPY . .
 
-CMD python patch_loading.py && python fix_media_ytdlp.py && python fix_r2_upload_ajax.py && gunicorn app:app --bind 0.0.0.0:${PORT} --workers 1 --threads 4 --timeout 300
+# Keep startup read-only. Do not run scripts that rewrite app.py or reference_tts.py here.
+CMD gunicorn app:app --bind 0.0.0.0:${PORT} --workers 1 --threads 4 --timeout 300
