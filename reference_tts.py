@@ -139,7 +139,11 @@ def youtube_visitor_data_from_cookies(cookies_path):
         return ""
     try:
         for line in Path(cookies_path).read_text(encoding="utf-8", errors="ignore").splitlines():
-            if not line or line.startswith("#"):
+            if not line:
+                continue
+            if line.startswith("#HttpOnly_"):
+                line = line[len("#HttpOnly_"):]
+            elif line.startswith("#"):
                 continue
             parts = line.split("\t")
             if len(parts) >= 7 and parts[5] == "VISITOR_INFO1_LIVE" and parts[6].strip():
@@ -193,11 +197,13 @@ def youtube_cookie_diagnostics():
         stripped = line.strip()
         if not stripped:
             continue
-        if stripped.startswith("#"):
+        if stripped.startswith("#HttpOnly_"):
+            stripped = stripped[len("#HttpOnly_"):]
+        elif stripped.startswith("#"):
             if "Netscape" in stripped or "HTTP Cookie File" in stripped:
                 info["netscape_format"] = True
             continue
-        parts = line.split("\t")
+        parts = stripped.split("\t")
         if len(parts) < 7:
             continue
         rows.append(parts)
