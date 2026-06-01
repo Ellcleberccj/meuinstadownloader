@@ -122,8 +122,8 @@ def ytdlp_cookie_args(workdir):
 
 def youtube_cookie_error_message(has_cookies):
     if has_cookies:
-        return "O YouTube recusou os cookies configurados em YTDLP_COOKIES_B64. Exporte cookies novos do YouTube em formato Netscape, converta para Base64, atualize a variável na Railway e faça redeploy."
-    return "O YouTube pediu login/bot e YTDLP_COOKIES_B64 não está configurada no container. Configure cookies do YouTube em formato Netscape convertido para Base64 na Railway e faça redeploy."
+        return "O YouTube recusou a tentativa autenticada do yt-dlp mesmo com YTDLP_COOKIES_B64. O app tambem tenta PO Token automatico; se persistir, atualize os cookies ou configure YTDLP_PROXY."
+    return "O YouTube pediu login/bot. Configure YTDLP_COOKIES_B64 na Railway; o app tambem tentara PO Token automatico quando disponivel."
 
 
 def is_youtube_host(host):
@@ -132,7 +132,7 @@ def is_youtube_host(host):
 
 def ytdlp_youtube_extractor_args():
     player_client = env_text("YTDLP_YOUTUBE_PLAYER_CLIENT", "mweb,web_safari,android_vr")
-    parts = [f"player_client={player_client}", env_text("YTDLP_YOUTUBE_EXTRA_ARGS", "fetch_pot=auto")]
+    parts = [f"player_client={player_client}", env_text("YTDLP_YOUTUBE_EXTRA_ARGS", "fetch_pot=always")]
     po_token = env_text("YTDLP_YOUTUBE_PO_TOKEN", env_text("YTDLP_PO_TOKEN", ""))
     if po_token:
         parts.append(f"po_token={po_token}")
@@ -140,6 +140,20 @@ def ytdlp_youtube_extractor_args():
     if visitor_data:
         parts.extend(["player_skip=webpage,configs", f"visitor_data={visitor_data}"])
     return ["--extractor-args", "youtube:" + ";".join(part for part in parts if part)]
+
+
+def ytdlp_pot_provider_args():
+    server_home = env_text("YTDLP_BGUTIL_SERVER_HOME", "")
+    candidates = [server_home] if server_home else [
+        str(Path.home() / "bgutil-ytdlp-pot-provider" / "server"),
+        "/root/bgutil-ytdlp-pot-provider/server",
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return ["--extractor-args", f"youtubepot-bgutilscript:server_home={candidate}"]
+    if server_home:
+        return ["--extractor-args", f"youtubepot-bgutilscript:server_home={server_home}"]
+    return []
 
 
 def ytdlp_extra_network_args():
@@ -160,6 +174,7 @@ def ytdlp_command(output_template, url, cookie_args=None, youtube_args=None):
         *ytdlp_extra_network_args(),
         "--js-runtimes", "node",
         "--remote-components", "ejs:github",
+        *ytdlp_pot_provider_args(),
         *(youtube_args or []),
         "--no-playlist",
         "--max-filesize", "250M",
