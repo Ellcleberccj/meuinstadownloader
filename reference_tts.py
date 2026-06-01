@@ -113,15 +113,43 @@ def env_bool(name, default=False):
     return value.lower() not in {"0", "false", "no", "off"}
 
 
-def ytdlp_cookie_file(workdir):
+def normalize_netscape_cookie_text(cookie_text):
+    lines = []
+    valid_rows = 0
+    for raw_line in cookie_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("#") and not line.startswith("#HttpOnly_"):
+            lines.append(line)
+            continue
+        parts = line.split("\t")
+        if len(parts) < 7:
+            parts = re.split(r"\s+", line, maxsplit=6)
+        if len(parts) >= 7:
+            lines.append("\t".join(parts[:7]))
+            valid_rows += 1
+    if valid_rows and not any("Netscape HTTP Cookie File" in line for line in lines):
+        lines.insert(0, "# Netscape HTTP Cookie File")
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
+def decode_ytdlp_cookies_text():
     cookies_b64 = env_text("YTDLP_COOKIES_B64", "")
     if not cookies_b64:
-        return None
-    cookies_path = Path(workdir) / "yt_dlp_cookies.txt"
+        return ""
     try:
-        cookies_path.write_bytes(base64.b64decode(cookies_b64))
+        return base64.b64decode(cookies_b64).decode("utf-8", errors="ignore")
     except Exception as exc:
         raise RuntimeError("YTDLP_COOKIES_B64 inválida. Exporte cookies do YouTube em formato Netscape e converta para Base64.") from exc
+
+
+def ytdlp_cookie_file(workdir):
+    cookie_text = decode_ytdlp_cookies_text()
+    if not cookie_text:
+        return None
+    cookies_path = Path(workdir) / "yt_dlp_cookies.txt"
+    cookies_path.write_text(normalize_netscape_cookie_text(cookie_text), encoding="utf-8")
     if not cookies_path.exists() or cookies_path.stat().st_size == 0:
         raise RuntimeError("YTDLP_COOKIES_B64 gerou um arquivo vazio. Exporte os cookies novamente em formato Netscape.")
     return cookies_path
@@ -171,7 +199,8 @@ def youtube_cookie_diagnostics():
         return info
 
     try:
-        cookie_text = base64.b64decode(cookies_b64).decode("utf-8", errors="ignore")
+        cookie_text = decode_ytdlp_cookies_text()
+        normalized_cookie_text = normalize_netscape_cookie_text(cookie_text)
         info["base64_valid"] = True
     except Exception:
         info["diagnosis"] = "YTDLP_COOKIES_B64 nao e Base64 valido."
@@ -193,7 +222,7 @@ def youtube_cookie_diagnostics():
     }
     present_auth = set()
     expired_auth = set()
-    for line in cookie_text.splitlines():
+    for line in normalized_cookie_text.splitlines():
         stripped = line.strip()
         if not stripped:
             continue
