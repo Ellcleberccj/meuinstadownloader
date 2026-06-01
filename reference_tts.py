@@ -106,10 +106,17 @@ def env_int(name, default):
         return default
 
 
-def ytdlp_cookie_args(workdir):
+def env_bool(name, default=False):
+    value = env_text(name, "")
+    if not value:
+        return default
+    return value.lower() not in {"0", "false", "no", "off"}
+
+
+def ytdlp_cookie_file(workdir):
     cookies_b64 = env_text("YTDLP_COOKIES_B64", "")
     if not cookies_b64:
-        return []
+        return None
     cookies_path = Path(workdir) / "yt_dlp_cookies.txt"
     try:
         cookies_path.write_bytes(base64.b64decode(cookies_b64))
@@ -117,29 +124,57 @@ def ytdlp_cookie_args(workdir):
         raise RuntimeError("YTDLP_COOKIES_B64 inválida. Exporte cookies do YouTube em formato Netscape e converta para Base64.") from exc
     if not cookies_path.exists() or cookies_path.stat().st_size == 0:
         raise RuntimeError("YTDLP_COOKIES_B64 gerou um arquivo vazio. Exporte os cookies novamente em formato Netscape.")
+    return cookies_path
+
+
+def ytdlp_cookie_args(workdir):
+    cookies_path = ytdlp_cookie_file(workdir)
+    if not cookies_path:
+        return []
     return ["--cookies", str(cookies_path)]
+
+
+def youtube_visitor_data_from_cookies(cookies_path):
+    if not cookies_path:
+        return ""
+    try:
+        for line in Path(cookies_path).read_text(encoding="utf-8", errors="ignore").splitlines():
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) >= 7 and parts[5] == "VISITOR_INFO1_LIVE" and parts[6].strip():
+                return parts[6].strip()
+    except Exception:
+        return ""
+    return ""
 
 
 def youtube_cookie_error_message(has_cookies):
     if has_cookies:
-        return "O YouTube recusou a tentativa autenticada do yt-dlp mesmo com YTDLP_COOKIES_B64. O app tambem tenta PO Token automatico; se persistir, atualize os cookies ou configure YTDLP_PROXY."
-    return "O YouTube pediu login/bot. Configure YTDLP_COOKIES_B64 na Railway; o app tambem tentara PO Token automatico quando disponivel."
+        return "O YouTube recusou todas as tentativas do yt-dlp mesmo com cookies, PO Token, mweb e fingerprint de navegador. Isso normalmente indica bloqueio do IP da Railway; configure YTDLP_PROXY com um proxy residencial/ISP ou gere cookies novos em janela anonima."
+    return "O YouTube pediu login/bot. O app tentou yt-dlp com PO Token automatico; se persistir na Railway, configure YTDLP_COOKIES_B64 e/ou YTDLP_PROXY."
 
 
 def is_youtube_host(host):
     return host in {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"} or host.endswith(".youtube.com")
 
 
-def ytdlp_youtube_extractor_args():
-    player_client = env_text("YTDLP_YOUTUBE_PLAYER_CLIENT", "mweb,web_safari,android_vr")
+def ytdlp_youtube_extractor_args(visitor_data="", skip_webpage=False, player_client=None):
+    player_client = env_text("YTDLP_YOUTUBE_PLAYER_CLIENT", player_client or "mweb")
     parts = [f"player_client={player_client}", env_text("YTDLP_YOUTUBE_EXTRA_ARGS", "fetch_pot=always")]
     po_token = env_text("YTDLP_YOUTUBE_PO_TOKEN", env_text("YTDLP_PO_TOKEN", ""))
     if po_token:
         parts.append(f"po_token={po_token}")
-    visitor_data = env_text("YTDLP_YOUTUBE_VISITOR_DATA", "")
+    visitor_data = env_text("YTDLP_YOUTUBE_VISITOR_DATA", visitor_data)
+    if skip_webpage:
+        parts.append("player_skip=webpage,configs")
     if visitor_data:
-        parts.extend(["player_skip=webpage,configs", f"visitor_data={visitor_data}"])
-    return ["--extractor-args", "youtube:" + ";".join(part for part in parts if part)]
+        parts.append(f"visitor_data={visitor_data}")
+    args = []
+    if skip_webpage:
+        args.extend(["--extractor-args", "youtubetab:skip=webpage"])
+    args.extend(["--extractor-args", "youtube:" + ";".join(part for part in parts if part)])
+    return args
 
 
 def ytdlp_pot_provider_args():
@@ -161,6 +196,11 @@ def ytdlp_extra_network_args():
     user_agent = env_text("YTDLP_USER_AGENT", "")
     if user_agent:
         args.extend(["--user-agent", user_agent])
+    impersonate = env_text("YTDLP_IMPERSONATE", "chrome")
+    if impersonate:
+        args.extend(["--impersonate", impersonate])
+    if env_bool("YTDLP_FORCE_IPV4", True):
+        args.append("--force-ipv4")
     proxy = env_text("YTDLP_PROXY", "")
     if proxy:
         args.extend(["--proxy", proxy])
@@ -176,8 +216,12 @@ def ytdlp_command(output_template, url, cookie_args=None, youtube_args=None):
         "--remote-components", "ejs:github",
         *ytdlp_pot_provider_args(),
         *(youtube_args or []),
+        "--sleep-requests", env_text("YTDLP_SLEEP_REQUESTS", "2"),
+        "--extractor-retries", env_text("YTDLP_EXTRACTOR_RETRIES", "3"),
+        "--retries", env_text("YTDLP_RETRIES", "3"),
         "--no-playlist",
         "--max-filesize", "250M",
+        "-f", env_text("YTDLP_FORMAT", "bestaudio/best"),
         "-o", output_template,
         url,
     ]
@@ -245,11 +289,22 @@ def download_reference_media(url, workdir):
 
     if is_youtube_host(host):
         output_template = str(workdir / "generic_media.%(ext)s")
-        cookie_args = ytdlp_cookie_args(workdir)
+        cookies_path = ytdlp_cookie_file(workdir)
+        cookie_args = ["--cookies", str(cookies_path)] if cookies_path else []
+        visitor_data = youtube_visitor_data_from_cookies(cookies_path)
+        attempts = []
+        if cookie_args and visitor_data:
+            youtube_args = ytdlp_youtube_extractor_args(visitor_data=visitor_data, skip_webpage=True)
+            attempts.append(("modo autenticado com cookies + visitor_data sem webpage", ytdlp_command(output_template, url, cookie_args=cookie_args, youtube_args=youtube_args), True))
         youtube_args = ytdlp_youtube_extractor_args()
-        attempts = [("modo publico sem cookies", ytdlp_command(output_template, url, youtube_args=youtube_args), False)]
+        attempts.append(("modo publico sem cookies + PO Token", ytdlp_command(output_template, url, youtube_args=youtube_args), False))
         if cookie_args:
-            attempts.append(("modo autenticado com cookies", ytdlp_command(output_template, url, cookie_args=cookie_args, youtube_args=youtube_args), True))
+            youtube_args = ytdlp_youtube_extractor_args(visitor_data=visitor_data)
+            attempts.append(("modo autenticado com cookies + PO Token", ytdlp_command(output_template, url, cookie_args=cookie_args, youtube_args=youtube_args), True))
+        fallback_clients = env_text("YTDLP_YOUTUBE_FALLBACK_CLIENTS", "web_embedded,android_vr")
+        if fallback_clients:
+            youtube_args = ytdlp_youtube_extractor_args(player_client=fallback_clients)
+            attempts.append((f"modo fallback clientes {fallback_clients}", ytdlp_command(output_template, url, youtube_args=youtube_args), False))
         errors = []
         for label, command, used_cookies in attempts:
             try:
