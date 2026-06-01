@@ -149,6 +149,95 @@ def youtube_visitor_data_from_cookies(cookies_path):
     return ""
 
 
+def youtube_cookie_diagnostics():
+    cookies_b64 = env_text("YTDLP_COOKIES_B64", "")
+    info = {
+        "configured": bool(cookies_b64),
+        "base64_valid": False,
+        "netscape_format": False,
+        "total_cookie_rows": 0,
+        "youtube_or_google_cookie_rows": 0,
+        "visitor_info_live": False,
+        "auth_cookie_names_present": [],
+        "expired_cookie_rows": 0,
+        "expired_auth_cookie_names": [],
+        "diagnosis": "YTDLP_COOKIES_B64 nao configurado.",
+    }
+    if not cookies_b64:
+        return info
+
+    try:
+        cookie_text = base64.b64decode(cookies_b64).decode("utf-8", errors="ignore")
+        info["base64_valid"] = True
+    except Exception:
+        info["diagnosis"] = "YTDLP_COOKIES_B64 nao e Base64 valido."
+        return info
+
+    rows = []
+    now_ts = int(time.time())
+    auth_names = {
+        "LOGIN_INFO",
+        "SID",
+        "HSID",
+        "SSID",
+        "APISID",
+        "SAPISID",
+        "__Secure-1PSID",
+        "__Secure-3PSID",
+        "__Secure-1PSIDTS",
+        "__Secure-3PSIDTS",
+    }
+    present_auth = set()
+    expired_auth = set()
+    for line in cookie_text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("#"):
+            if "Netscape" in stripped or "HTTP Cookie File" in stripped:
+                info["netscape_format"] = True
+            continue
+        parts = line.split("\t")
+        if len(parts) < 7:
+            continue
+        rows.append(parts)
+        domain, expires, name = parts[0].lower(), parts[4], parts[5]
+        is_youtube_cookie = "youtube.com" in domain or "google.com" in domain
+        if not is_youtube_cookie:
+            continue
+        info["youtube_or_google_cookie_rows"] += 1
+        if name == "VISITOR_INFO1_LIVE" and parts[6].strip():
+            info["visitor_info_live"] = True
+        if name in auth_names:
+            present_auth.add(name)
+        try:
+            expires_ts = int(expires)
+        except ValueError:
+            expires_ts = 0
+        if expires_ts and expires_ts < now_ts:
+            info["expired_cookie_rows"] += 1
+            if name in auth_names:
+                expired_auth.add(name)
+
+    info["total_cookie_rows"] = len(rows)
+    info["auth_cookie_names_present"] = sorted(present_auth)
+    info["expired_auth_cookie_names"] = sorted(expired_auth)
+
+    if not info["netscape_format"] or not rows:
+        info["diagnosis"] = "Base64 abre, mas nao parece cookies.txt Netscape valido."
+    elif not info["youtube_or_google_cookie_rows"]:
+        info["diagnosis"] = "O arquivo nao contem cookies de youtube.com/google.com."
+    elif not info["visitor_info_live"]:
+        info["diagnosis"] = "Cookies parecem incompletos para YouTube: falta VISITOR_INFO1_LIVE. Reexporte em janela anonima no YouTube."
+    elif present_auth and present_auth == expired_auth:
+        info["diagnosis"] = "Cookies de autenticacao do YouTube parecem expirados."
+    elif not present_auth:
+        info["diagnosis"] = "Tem cookies do YouTube, mas nao achei cookies de login. Pode ser export anonimo/incompleto."
+    else:
+        info["diagnosis"] = "Cookies parecem estruturalmente validos; se o yt-dlp ainda recebe bot-check, a suspeita principal vira IP/proxy da Railway."
+    return info
+
+
 def youtube_cookie_error_message(has_cookies):
     if has_cookies:
         return "O YouTube recusou todas as tentativas do yt-dlp mesmo com cookies, PO Token, mweb e fingerprint de navegador. Isso normalmente indica bloqueio do IP da Railway; configure YTDLP_PROXY com um proxy residencial/ISP ou gere cookies novos em janela anonima."
