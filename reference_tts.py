@@ -33,6 +33,7 @@ RESULT_HTML = """
 <div class="playerBox"><audio id="generatedAudio" controls preload="auto" src="data:audio/mpeg;base64,{{audio_b64}}"></audio><div id="audioStatus" class="status">Carregando preview...</div></div>
 <div class="actions">
 <a class="btn btn2" href="data:audio/mpeg;base64,{{audio_b64}}" download="{{filename}}">Baixar MP3</a>
+<form method="post" action="{{url_for('compress_ref_tts_audio')}}"><input type="hidden" name="filename" value="{{filename}}"><input type="hidden" name="reference_text" value="{{reference_text}}">{% if regenerate %}<input type="hidden" name="regenerate_action" value="{{regenerate.action_url}}">{% for name, value in regenerate.fields.items() %}<input type="hidden" name="regen_{{name}}" value="{{value}}">{% endfor %}{% endif %}<button class="btn btn2" type="submit">Comprimir MP3 40%</button></form>
 <form method="post" action="{{url_for('upload_ref_tts_r2')}}"><input type="hidden" name="filename" value="{{filename}}"><input type="hidden" name="reference_text" value="{{reference_text}}">{% if regenerate %}<input type="hidden" name="regenerate_action" value="{{regenerate.action_url}}">{% for name, value in regenerate.fields.items() %}<input type="hidden" name="regen_{{name}}" value="{{value}}">{% endfor %}{% endif %}<button class="btn" type="submit">Upload no Cloudflare R2 bucket</button></form>
 {% if regenerate %}<form method="post" action="{{regenerate.action_url}}">{% for name, value in regenerate.fields.items() %}<input type="hidden" name="{{name}}" value="{{value}}">{% endfor %}<button class="btn" type="submit">Regenerar</button></form>{% endif %}
 <a class="btn btn2" href="{{url_for('index')}}">Voltar</a>
@@ -61,6 +62,7 @@ def register(app, auth_required, data_dir, lock, loader_fn, story_iter_fn, story
     app.add_url_rule("/make-ref-tts", "make_ref_tts", auth_required(make_ref_tts), methods=["POST"])
     app.add_url_rule("/create-fish-voice", "create_fish_voice", auth_required(create_fish_voice), methods=["POST"])
     app.add_url_rule("/generate-fish-voice", "generate_fish_voice", auth_required(generate_fish_voice), methods=["POST"])
+    app.add_url_rule("/compress-ref-tts-audio", "compress_ref_tts_audio", auth_required(compress_ref_tts_audio), methods=["POST"])
     app.add_url_rule("/upload-r2-audio", "upload_ref_tts_r2", auth_required(upload_ref_tts_r2), methods=["POST"])
     app.add_url_rule("/media-file/<filename>", "media_file", auth_required(media_file), methods=["GET"])
     app.add_url_rule("/ref-tts-audio/<filename>", "ref_tts_audio", auth_required(ref_tts_audio), methods=["GET"])
@@ -439,6 +441,62 @@ def save_output_mp3(output_bytes):
     return filename
 
 
+def format_file_size(size_bytes):
+    value = float(size_bytes or 0)
+    for unit in ["B", "KB", "MB", "GB"]:
+        if value < 1024 or unit == "GB":
+            return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
+        value /= 1024
+    return f"{value:.1f} GB"
+
+
+def mp3_bitrate_bps(path):
+    probe = run_checked([
+        "ffprobe", "-v", "error", "-show_entries", "format=duration,bit_rate", "-of", "json", str(path)
+    ], "Falha ao analisar o bitrate do MP3")
+    data = json.loads(probe.stdout or "{}")
+    fmt = data.get("format") or {}
+    try:
+        bit_rate = int(float(fmt.get("bit_rate") or 0))
+    except (TypeError, ValueError):
+        bit_rate = 0
+    if bit_rate > 0:
+        return bit_rate
+    try:
+        duration = float(fmt.get("duration") or 0)
+    except (TypeError, ValueError):
+        duration = 0
+    if duration > 0:
+        return int(path.stat().st_size * 8 / duration)
+    raise RuntimeError("Nao foi possivel detectar o bitrate do MP3.")
+
+
+def compress_mp3_to_40_percent(path):
+    original_size = path.stat().st_size
+    original_bps = mp3_bitrate_bps(path)
+    target_kbps = max(24, int(round((original_bps * 0.40) / 1000)))
+    workdir = Path(tempfile.mkdtemp(prefix="fish_compress_"))
+    try:
+        output_path = workdir / "compressed.mp3"
+        run_checked([
+            "ffmpeg", "-y", "-i", str(path), "-vn", "-map_metadata", "-1", "-codec:a", "libmp3lame",
+            "-b:a", f"{target_kbps}k", "-write_xing", "1", "-id3v2_version", "3", str(output_path)
+        ], "Falha ao comprimir o MP3")
+        if not output_path.exists() or output_path.stat().st_size <= 1000:
+            raise RuntimeError("A compressao nao gerou um MP3 valido.")
+        compressed_filename = save_output_mp3(output_path.read_bytes())
+        compressed_size = ref_tts_path(compressed_filename).stat().st_size
+        return {
+            "filename": compressed_filename,
+            "original_size": original_size,
+            "compressed_size": compressed_size,
+            "original_kbps": max(1, int(round(original_bps / 1000))),
+            "target_kbps": target_kbps,
+        }
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
 def mp3_base64_for_result(filename):
     path = ref_tts_path(filename)
     if path is None:
@@ -614,6 +672,28 @@ def regenerate_from_request():
     if not action_url or not fields:
         return None
     return {"action_url": action_url, "fields": fields}
+
+
+def compress_ref_tts_audio():
+    filename = (request.form.get("filename") or "").strip()
+    reference_text = request.form.get("reference_text") or ""
+    regenerate = regenerate_from_request()
+    path = ref_tts_path(filename)
+    if path is None:
+        flash("MP3 gerado nao encontrado para compressao.", "error")
+        return redirect(url_for("index"))
+    try:
+        result = compress_mp3_to_40_percent(path)
+        old_size = format_file_size(result["original_size"])
+        new_size = format_file_size(result["compressed_size"])
+        flash(
+            f"Compressao concluida: {old_size} -> {new_size}. Bitrate: {result['original_kbps']} kbps -> {result['target_kbps']} kbps.",
+            "ok",
+        )
+        return render_audio_result(result["filename"], reference_text, regenerate)
+    except Exception as exc:
+        flash(f"Erro ao comprimir MP3: {type(exc).__name__}: {exc}", "error")
+        return render_audio_result(filename, reference_text, regenerate)
 
 
 def upload_ref_tts_r2():
